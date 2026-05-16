@@ -3,7 +3,7 @@
  * 根據交易紀錄計算各人之間的淨欠款
  */
 
-const { parseTransactionDate } = require("../utils/date");
+const { parseTransactionDate, isSameMonthInAppTz } = require("../utils/date");
 
 /**
  * 計算各人淨餘額
@@ -87,6 +87,46 @@ function calculateBalances(transactions) {
 }
 
 /**
+ * 將各人淨餘額化簡為最少還款路徑（誰還給誰）
+ * @param {Record<string, number>} balances
+ * @returns {{ debtor: string, creditor: string, amount: number }[]}
+ */
+function simplifyDebts(balances) {
+  const debtors = [];
+  const creditors = [];
+
+  for (const [name, balance] of Object.entries(balances)) {
+    const rounded = Math.round(balance);
+    if (rounded > 0) creditors.push({ name, remaining: rounded });
+    else if (rounded < 0) debtors.push({ name, remaining: -rounded });
+  }
+
+  debtors.sort((a, b) => b.remaining - a.remaining);
+  creditors.sort((a, b) => b.remaining - a.remaining);
+
+  const edges = [];
+  let i = 0;
+  let j = 0;
+
+  while (i < debtors.length && j < creditors.length) {
+    const pay = Math.min(debtors[i].remaining, creditors[j].remaining);
+    if (pay >= 1) {
+      edges.push({
+        debtor: debtors[i].name,
+        creditor: creditors[j].name,
+        amount: pay,
+      });
+    }
+    debtors[i].remaining -= pay;
+    creditors[j].remaining -= pay;
+    if (debtors[i].remaining < 1) i++;
+    if (creditors[j].remaining < 1) j++;
+  }
+
+  return edges;
+}
+
+/**
  * 取得 shared 交易的參與者名單
  * @param {object} tx
  * @returns {string[]}
@@ -116,13 +156,10 @@ function calculateTotalExpense(transactions) {
  */
 function filterCurrentMonth(transactions) {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-
   return transactions.filter((tx) => {
     const d = parseTransactionDate(tx.date);
     if (!d) return false;
-    return d.getFullYear() === year && d.getMonth() === month;
+    return isSameMonthInAppTz(d, now);
   });
 }
 
@@ -142,6 +179,7 @@ function summarizeByCategory(transactions) {
 
 module.exports = {
   calculateBalances,
+  simplifyDebts,
   calculateTotalExpense,
   filterCurrentMonth,
   summarizeByCategory,

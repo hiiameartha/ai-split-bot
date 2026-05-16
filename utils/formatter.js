@@ -1,36 +1,55 @@
 /**
- * MoodPay - 訊息格式化工具
+ * MoodPay - 訊息格式化（產品語氣）
  */
 
+const { BRAND, pick, formatMoney, REPORT } = require("../services/moodVoice");
+const { labelForViewer } = require("../services/actor");
+const { simplifyDebts } = require("../services/settlement");
+const { formatDateTimeForDisplay } = require("./date");
+
+function formatDebtEdgeLine(debtor, creditor, amount) {
+  const money = formatMoney(amount);
+  if (debtor === "我") {
+    return `  你要還給 ${creditor}　${money} 元`;
+  }
+  if (creditor === "我") {
+    return `  ${debtor} 要還你　${money} 元`;
+  }
+  return `  ${debtor} → ${creditor}　${money} 元`;
+}
+
+function formatDebtSettlementBody(balances) {
+  const edges = simplifyDebts(balances);
+  if (edges.length === 0) return null;
+  return edges
+    .map(({ debtor, creditor, amount }) =>
+      formatDebtEdgeLine(debtor, creditor, amount)
+    )
+    .join("\n");
+}
+
 function formatDebtReport(balances) {
-  const entries = Object.entries(balances);
-  if (entries.length === 0) {
-    return "🎉 目前沒有欠款紀錄，大家和平相處中！";
+  const body = formatDebtSettlementBody(balances);
+  if (!body) {
+    return "🕊️ 目前沒有欠債修羅場\n大家和平相處，MoodPay 很欣慰";
   }
 
-  const lines = ["💸 欠款統計", "─────────────"];
-
-  for (const [name, balance] of entries) {
-    if (balance > 0) {
-      lines.push(`✅ ${name}：別人欠你 ${balance} 元`);
-    } else if (balance < 0) {
-      lines.push(`😅 ${name}：你欠別人 ${Math.abs(balance)} 元`);
-    }
-  }
-
-  lines.push("─────────────");
-  lines.push("（正數=別人欠你，負數=你欠別人）");
-  return lines.join("\n");
+  return [BRAND, `  ${REPORT.debt}`, "", body].join("\n");
 }
 
 function formatSummary(total, byCategory) {
-  const lines = ["📊 總支出摘要", "─────────────", `💰 總計：${total} 元（台幣）`];
+  const lines = [
+    BRAND,
+    "  快速偷看",
+    "",
+    `  本月燃燒　${formatMoney(total)} 元`,
+  ];
 
   const cats = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
   if (cats.length > 0) {
-    lines.push("", "📂 分類明細：");
+    lines.push("", "  吞錢排行：");
     for (const [cat, amount] of cats) {
-      lines.push(`  • ${cat}：${amount} 元`);
+      lines.push(`    · ${cat}　${formatMoney(amount)} 元`);
     }
   }
 
@@ -41,24 +60,22 @@ function formatMonthSummary(total, count) {
   const now = new Date();
   const month = now.getMonth() + 1;
   return [
-    `📅 ${now.getFullYear()} 年 ${month} 月支出`,
-    "─────────────",
-    `💰 本月總計：${total} 元（台幣）`,
-    `📝 交易筆數：${count} 筆`,
+    BRAND,
+    `  ${now.getFullYear()} 年 ${month} 月 · 簡短版`,
+    "",
+    `  本月燃燒　${formatMoney(total)} 元`,
+    `  出手次數　${count} 次`,
   ].join("\n");
 }
 
-/**
- * 聊天截圖分析結果
- * @param {object[]} transactions
- * @param {{ positivePayer: string, userName: string, currency?: string }} cfg
- */
-function formatChatImageAnalysis(transactions, cfg) {
+function formatChatImageAnalysis(transactions, cfg, viewer) {
+  const me = viewer?.selfLabel || cfg.userName || "我";
   const lines = [
-    "📷 聊天記帳截圖分析",
-    "─────────────",
-    `規則：正數＝${cfg.positivePayer}幫${cfg.userName}付`,
-    `      負數＝${cfg.userName}請${cfg.positivePayer}`,
+    BRAND,
+    "  截圖讀心術完成 📷",
+    "",
+    `  正數＝${cfg.positivePayer} 幫 ${me} 付`,
+    `  負數＝${me} 請 ${cfg.positivePayer}`,
     "",
   ];
 
@@ -73,13 +90,11 @@ function formatChatImageAnalysis(transactions, cfg) {
     const tx = show[i];
     const isPositive = tx.relation === "paid_for_me";
     const icon = isPositive ? "➕" : "➖";
-    const desc = isPositive
-      ? `${tx.payer} 幫 ${tx.consumer} 付`
-      : `${tx.payer} 幫 ${tx.consumer} 付`;
+    const payer = labelForViewer(tx.payer, viewer);
+    const consumer = labelForViewer(tx.consumer, viewer);
+    const desc = `${payer} 幫 ${consumer} 付`;
 
-    lines.push(
-      `${i + 1}. ${icon} ${tx.amount} ${tx.currency} ${tx.item}`
-    );
+    lines.push(`${i + 1}. ${icon} ${tx.amount} ${tx.currency} ${tx.item}`);
     lines.push(`   → ${desc}`);
 
     if (isPositive) {
@@ -92,15 +107,15 @@ function formatChatImageAnalysis(transactions, cfg) {
   }
 
   if (transactions.length > show.length) {
-    lines.push(`…其餘 ${transactions.length - show.length} 筆（匯入後可在 Sheet 查看）`);
+    lines.push(`…還有 ${transactions.length - show.length} 筆，匯入後一起看`);
   }
 
-  lines.push("─────────────");
+  lines.push("");
   lines.push(
-    `📗 ${cfg.positivePayer}幫你付：${countPaidForMe} 筆，共 ${round2(sumPaidForMe)} ${currency}`
+    `📗 ${cfg.positivePayer} 幫你付：${countPaidForMe} 筆，共 ${round2(sumPaidForMe)} ${currency}`
   );
   lines.push(
-    `📘 你幫${cfg.positivePayer}付：${countIPaid} 筆，共 ${round2(sumIPaid)} ${currency}`
+    `📘 你幫 ${cfg.positivePayer} 付：${countIPaid} 筆，共 ${round2(sumIPaid)} ${currency}`
   );
 
   const net = round2(sumPaidForMe - sumIPaid);
@@ -112,10 +127,10 @@ function formatChatImageAnalysis(transactions, cfg) {
     );
   }
 
-  lines.push("─────────────");
-  lines.push(`✅ 共 ${transactions.length} 筆`);
-  lines.push("回覆「匯入」寫入 Google Sheet");
-  lines.push("（不滿意可重傳截圖，不會自動寫入）");
+  lines.push("");
+  lines.push(`共抓到 ${transactions.length} 筆`);
+  lines.push("滿意就回「匯入」，MoodPay 幫你寫進帳本");
+  lines.push("不滿意就重傳，不會亂記");
 
   return lines.join("\n");
 }
@@ -125,82 +140,76 @@ function round2(n) {
 }
 
 function formatImportDone(count) {
-  return `✅ 已匯入 ${count} 筆到帳本\n輸入 /debt 查看欠款統計`;
+  return pick([
+    `好了，${count} 筆都進帳本了 ✨\n/debt 看代墊結算`,
+    `匯入完成：${count} 筆\nMoodPay 已幫你記好，/debt 查欠債`,
+    `${count} 筆寫進去了～\n想算帳就 /debt`,
+  ]);
 }
 
 function formatHelp() {
   return [
-    "📖 MoodPay 使用教學",
-    "─────────────",
-    "📷 聊天記帳截圖：",
-    "  直接傳圖片（正數=對方幫你付，負數=你付對方）",
-    "  分析後回覆「匯入」寫入 Sheet",
+    `${BRAND} 使用指南`,
     "",
-    "💬 記帳（自然語言）：",
-    "  • 我買了80元便當",
-    "  • 男友幫我付25馬幣火鍋",
+    "📷 傳聊天截圖",
+    "  MoodPay 會讀圖，回「匯入」才寫帳",
     "",
-    "🗑️ 刪除：",
-    "  • 刪除上一筆",
-    "  • 刪除 測試吐司",
-    "  • 刪除 2（多筆時選編號）",
+    "💬 直接打字記帳",
+    "  例：我買了 80 元便當",
+    "  例：男友幫我付 25 馬幣火鍋",
     "",
-    "📊 圖表（QuickChart）：",
-    "  /chart     → Dashboard 總覽（橫條圖）",
-    "  /category  → 已分類圓餅圖（不含待分類）",
-    "  /monthly   → 每日支出折線圖",
-    "  /debtchart → 欠款長條圖",
-    "  /members   → 成員消費比較",
+    "🗑️ 刪除",
+    "  刪除上一筆 / 刪除 關鍵字 / 刪除 2",
     "",
-    "📌 指令：",
-    "  /undo      → 刪除最後一筆",
-    "  /delete 關鍵字 → 刪除符合項目",
-    "  /debt      → 欠款文字統計",
-    "  /summary   → 本月分析文案",
-    "  /month     → 本月支出摘要",
-    "  /help      → 此教學",
+    "✨ 偷看財務（像 Wrapped）",
+    "  /chart     財務偷看報告",
+    "  /category  吞錢排行榜（圓餅）",
+    "  /monthly   每日燃燒曲線",
+    "  /debtchart 欠債長條圖",
+    "  /members   花錢戰力榜",
     "",
-    "🌏 貨幣：TWD、MYR、USD、JPY、KRW",
+    "📌 其他",
+    "  /debt      代墊結算",
+    "  /summary   本月文案速覽",
+    "  /month     本月簡短版",
+    "  /undo /delete",
+    "",
+    "🌏 TWD · MYR · USD · JPY · KRW",
   ].join("\n");
 }
 
 function formatError(message) {
-  return `😵 哎呀，出了點問題：\n${message}\n\n輸入 /help 查看使用方式`;
+  return `MoodPay 剛絆了一下 🫠\n${message}\n\n/help 叫我怎麼用`;
 }
 
-/**
- * 多筆匹配時請使用者選擇
- * @param {object[]} matches
- * @param {string} keyword
- */
 function formatDeletePickList(matches, keyword) {
   const lines = [
-    `🔎 「${keyword}」找到 ${matches.length} 筆，請回覆編號：`,
-    "─────────────",
+    `「${keyword}」找到 ${matches.length} 筆，選一個送走：`,
+    "",
   ];
 
   for (const m of matches) {
-    const dateShort = m.date ? String(m.date).slice(0, 8) : "";
+    const dateShort = m.date ? formatDateTimeForDisplay(m.date) : "";
     lines.push(
-      `${m.index}) ${m.item} ${m.amount} ${m.currency}${dateShort ? ` (${dateShort})` : ""}`
+      `${m.index}) ${m.item} ${m.amount} ${m.currency}${dateShort ? ` · ${dateShort}` : ""}`
     );
   }
 
-  lines.push("─────────────");
-  lines.push("例：刪除 2");
+  lines.push("", "例：刪除 2");
   return lines.join("\n");
 }
 
 function formatZeroAmountWarning() {
   return [
-    "⚠️ 金額無法辨識或為 0，未寫入帳本",
-    "請用明確金額，例如：測試吐司 80元",
-    "若真是免費，請註明「免費」",
+    "這筆金額 MoodPay 讀不出來（或是 0）",
+    "試試：測試吐司 80 元",
+    "真的是免費的話，請註明「免費」",
   ].join("\n");
 }
 
 module.exports = {
   formatDebtReport,
+  formatDebtSettlementBody,
   formatSummary,
   formatMonthSummary,
   formatHelp,

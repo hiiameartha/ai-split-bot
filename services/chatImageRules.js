@@ -2,7 +2,10 @@
  * 聊天截圖正負號規則（無 OpenAI 依賴）
  */
 
-const { formatDateYYYYMMDD } = require("../utils/date");
+const {
+  formatTransactionDateTime,
+  formatDateAtNoonInAppTz,
+} = require("../utils/date");
 
 function getImportConfig() {
   return {
@@ -45,16 +48,17 @@ function applySignConvention(rawAmount, cfg) {
  * @param {number} year
  */
 function parseDateLabel(dateLabel, year) {
-  if (!dateLabel) return formatDateYYYYMMDD();
+  if (!dateLabel) return formatTransactionDateTime();
 
   const m = String(dateLabel).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
-  if (!m) return formatDateYYYYMMDD();
+  if (!m) return formatTransactionDateTime();
 
   const month = parseInt(m[1], 10);
   const day = parseInt(m[2], 10);
-  const d = new Date(year, month - 1, day);
-  if (isNaN(d.getTime())) return formatDateYYYYMMDD();
-  return formatDateYYYYMMDD(d);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return formatTransactionDateTime();
+  }
+  return formatDateAtNoonInAppTz(year, month, day);
 }
 
 module.exports = {

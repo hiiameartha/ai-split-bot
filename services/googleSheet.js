@@ -13,7 +13,8 @@ const {
   inferCategoryFromItem,
   CATEGORIES,
 } = require("./category");
-const { formatDateYYYYMMDD } = require("../utils/date");
+const { formatTransactionDateTime } = require("../utils/date");
+const { filterTransactionsByChatId } = require("../utils/chatId");
 
 /** Sheet 欄位標題（第一列） */
 const HEADERS = [
@@ -29,6 +30,9 @@ const HEADERS = [
   "tags",
   "rawText",
   "id",
+  "chatId",
+  "recordedBy",
+  "recordedByName",
 ];
 
 const SHEET_NAME = "Transactions";
@@ -173,9 +177,18 @@ async function syncHeaders(sheets, spreadsheetId, firstRow) {
 
   const hasTags = firstRow.includes("tags");
   const hasId = firstRow.includes("id");
+  const hasChatId = firstRow.includes("chatId");
+  const hasRecordedBy = firstRow.includes("recordedBy");
   const legacyDateHeader = firstRow[0] === "日期";
 
-  if (!hasTags || !hasId || legacyDateHeader || firstRow.length < HEADERS.length) {
+  if (
+    !hasTags ||
+    !hasId ||
+    !hasChatId ||
+    !hasRecordedBy ||
+    legacyDateHeader ||
+    firstRow.length < HEADERS.length
+  ) {
     console.log("[GoogleSheet] 更新標題列為新版欄位");
     await sheets.spreadsheets.values.update({
       spreadsheetId,
@@ -205,8 +218,25 @@ function mapRowToTransaction(row, rowIndex) {
   let tags = [];
   let rawText = "";
   let id = "";
+  let chatId = "";
+  let recordedBy = "";
+  let recordedByName = "";
 
-  if (len >= 12) {
+  if (len >= 15) {
+    category = row[8] || "other";
+    tags = parseTags(row[9]);
+    rawText = row[10] || "";
+    id = row[11] || "";
+    chatId = row[12] || "";
+    recordedBy = row[13] || "";
+    recordedByName = row[14] || "";
+  } else if (len >= 13) {
+    category = row[8] || "other";
+    tags = parseTags(row[9]);
+    rawText = row[10] || "";
+    id = row[11] || "";
+    chatId = row[12] || "";
+  } else if (len >= 12) {
     category = row[8] || "other";
     tags = parseTags(row[9]);
     rawText = row[10] || "";
@@ -236,6 +266,7 @@ function mapRowToTransaction(row, rowIndex) {
   return {
     rowIndex,
     id,
+    chatId,
     date: row[0] || "",
     payer: row[1] || "",
     consumer: row[2] || "",
@@ -247,6 +278,8 @@ function mapRowToTransaction(row, rowIndex) {
     category,
     tags,
     rawText,
+    recordedBy,
+    recordedByName,
   };
 }
 
@@ -269,25 +302,55 @@ async function fetchRawRows() {
  */
 async function getAllTransactions() {
   const rows = await fetchRawRows();
-  console.log(`[GoogleSheet] 讀取 ${rows.length} 筆交易`);
+  console.log(`[GoogleSheet] 讀取 ${rows.length} 筆交易（全表）`);
   return mapRowsToTransactions(rows);
 }
 
 /**
- * 最近 N 筆（由新到舊）
- * @param {number} n
+ * 讀取指定 LINE 帳本的交易（依 chatId 過濾）
+ * @param {string} chatId
+ * @returns {Promise<object[]>}
  */
-async function getRecentTransactions(n = 5) {
+async function getTransactions(chatId) {
   const all = await getAllTransactions();
+  const filtered = filterTransactionsByChatId(all, chatId);
+  console.log(
+    `[GoogleSheet] chatId=${shortChatId(chatId)} 帳本 ${filtered.length} 筆`
+  );
+  return filtered;
+}
+
+/**
+ * @param {string} chatId
+ */
+function shortChatId(chatId) {
+  const s = String(chatId || "");
+  if (s.length <= 12) return s;
+  return `${s.slice(0, 8)}…`;
+}
+
+/**
+ * 最近 N 筆（由新到舊，限單一帳本）
+ * @param {string} chatId
+ * @param {number} [n]
+ */
+async function getRecentTransactions(chatId, n = 5) {
+  const all = await getTransactions(chatId);
   return all.slice(-n).reverse();
 }
 
 /**
  * 新增一筆交易紀錄
  * @param {object} data
- * @returns {Promise<object>} 含 id 的完整資料
+ * @param {string} chatId - LINE groupId / userId
+ * @returns {Promise<object>} 含 id、chatId 的完整資料
  */
-async function appendTransaction(data) {
+async function appendTransaction(data, chatId) {
+  const bookId = (chatId || data.chatId || "").trim();
+  if (!bookId) {
+    throw new Error("缺少 chatId，無法寫入帳本");
+  }
+
   await ensureSheetReady();
 
   const sheets = await getSheetsClient();
@@ -295,7 +358,7 @@ async function appendTransaction(data) {
   const id = data.id || crypto.randomUUID();
 
   const row = [
-    data.date || formatDateYYYYMMDD(),
+    data.date || formatTransactionDateTime(),
     data.payer || "",
     data.consumer || "",
     data.item || "",
@@ -307,6 +370,9 @@ async function appendTransaction(data) {
     serializeTags(data.tags),
     data.rawText || "",
     id,
+    bookId,
+    data.recordedBy || "",
+    data.recordedByName || "",
   ];
 
   console.log("[GoogleSheet] 新增交易:", row);
@@ -320,7 +386,7 @@ async function appendTransaction(data) {
   });
 
   console.log("[GoogleSheet] 寫入成功");
-  return { ...data, id };
+  return { ...data, id, chatId: bookId };
 }
 
 /**
@@ -360,11 +426,12 @@ async function deleteRowByIndex(rowIndex) {
 }
 
 /**
- * 刪除最後一筆交易
+ * 刪除指定帳本最後一筆交易
+ * @param {string} chatId
  * @returns {Promise<{ status: 'ok'|'empty', transaction?: object }>}
  */
-async function deleteLastTransaction() {
-  const all = await getAllTransactions();
+async function deleteLastTransaction(chatId) {
+  const all = await getTransactions(chatId);
   if (all.length === 0) {
     return { status: "empty" };
   }
@@ -375,18 +442,19 @@ async function deleteLastTransaction() {
 }
 
 /**
- * 依項目關鍵字刪除（預設：多筆時只刪最新一筆匹配）
+ * 依項目關鍵字刪除（預設：多筆時只刪最新一筆匹配，限單一帳本）
  * @param {string} keyword
+ * @param {string} chatId
  * @param {{ pickIndex?: number }} [options]
  * @returns {Promise<{ status: string, transaction?: object, matches?: object[] }>}
  */
-async function deleteByItemKeyword(keyword, options = {}) {
+async function deleteByItemKeyword(keyword, chatId, options = {}) {
   const kw = (keyword || "").trim();
   if (!kw) {
-    return deleteLastTransaction();
+    return deleteLastTransaction(chatId);
   }
 
-  const all = await getAllTransactions();
+  const all = await getTransactions(chatId);
   const matches = all
     .filter(
       (tx) =>
@@ -428,17 +496,18 @@ async function deleteByItemKeyword(keyword, options = {}) {
 }
 
 /**
- * 依暫存序號刪除（多筆匹配後使用者選擇）
+ * 依暫存序號刪除（多筆匹配後使用者選擇，限單一帳本）
  * @param {object[]} matches
  * @param {number} pickIndex - 1-based
+ * @param {string} chatId
  */
-async function deleteByPickIndex(matches, pickIndex) {
+async function deleteByPickIndex(matches, pickIndex, chatId) {
   const entry = matches.find((m) => m.index === pickIndex);
   if (!entry) {
     return { status: "invalid_pick" };
   }
 
-  const all = await getAllTransactions();
+  const all = await getTransactions(chatId);
   const tx = all.find((t) => t.rowIndex === entry.rowIndex);
   if (!tx) {
     return { status: "not_found" };
@@ -451,6 +520,7 @@ async function deleteByPickIndex(matches, pickIndex) {
 module.exports = {
   appendTransaction,
   getAllTransactions,
+  getTransactions,
   getRecentTransactions,
   deleteLastTransaction,
   deleteByItemKeyword,

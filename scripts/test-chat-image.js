@@ -7,6 +7,9 @@ const {
   applySignConvention,
   parseDateLabel,
 } = require("../services/chatImageRules");
+const { parseTransactionDate, formatChartDayLabel } = require("../utils/date");
+
+process.env.MOODPAY_TIMEZONE = "Asia/Taipei";
 
 const cfg = { positivePayer: "男友", userName: "我" };
 
@@ -39,7 +42,7 @@ if (
 }
 
 const date = parseDateLabel("3/4(週四)", 2025);
-if (date === "20250304") {
+if (formatChartDayLabel(date) === "3/4" && parseTransactionDate(date)) {
   console.log("✅ 日期 3/4 →", date);
   passed += 1;
 } else {

@@ -49,14 +49,30 @@ tags 範例：
 - item「海底撈」→ category:"food", tags:["火鍋","聚餐","餐廳"]
 - item「Grab去機場」→ category:"transport", tags:["Grab","機場","交通"]
 - item「星巴克拿鐵」→ category:"drink", tags:["咖啡","星巴克"]
+- item「鍵盤」2000元 → category:"shopping", tags:["鍵盤","3C","電腦配件"]
+- item「影印紙」→ category:"work", tags:["文具","辦公"]
+- item「椅子推進器」10元 → category:"shopping", tags:["椅子","家具","家居"]
 
-category 對照：
-- travel：博物館、景點、古蹟、住宿、機票、門票、樂園、娘惹文化場館
-- food：餐廳、正餐、小吃、夜市
+category 對照（務必選最貼近的一項，避免 other）：
+- food：餐廳、正餐、小吃、夜市、外送
 - drink：咖啡、手搖、飲料
-- transport：Grab、計程車、捷運、加油
-- entertainment：電影、KTV、遊戲
-- 其餘依字面語意判斷
+- transport：Grab、計程車、捷運、加油、停車
+- grocery：超市採買、食材、泡麵、衛生紙、洗沐用品
+- shopping：3C、鍵盤滑鼠螢幕、衣服鞋包、家具家居（椅子、沙發、家電、收納）
+- entertainment：電影、KTV、演唱會、遊玩消費（非買硬體）
+- travel：住宿、機票、景點門票、博物館
+- rent：房租、租金
+- utility：水電瓦斯、網路費、電話費
+- medical：醫院、診所、藥局
+- pet：寵物、飼料、獸醫
+- subscription：Netflix、Spotify、軟體訂閱
+- gift：禮物、紅包
+- study：學費、課程、書籍
+- beauty：美容、美髮、美甲、化妝保養
+- work：文具、影印、辦公桌椅（非一般家具）
+- debt：還款
+- transfer：轉帳
+- other：僅在以上皆不符合時使用
 
 relation：self / paid_for_me / i_paid / shared
 

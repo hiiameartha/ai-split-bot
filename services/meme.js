@@ -159,6 +159,93 @@ const GENERIC_MEME_FALLBACKS = [
   ...PET_MEMES.slice(0, 3),
 ];
 
+/**
+ * 品項／輸入文字 → Giphy 搜尋（越前面越具體）
+ * @type {{ pattern: RegExp, queries: string[] }[]}
+ */
+const ITEM_GIPHY_PATTERNS = [
+  {
+    pattern: /天使雞排/,
+    queries: [
+      "taiwan fried chicken meme",
+      "fried chicken cutlet funny",
+      "eating fried chicken reaction",
+    ],
+  },
+  {
+    pattern: /雞排|鹽酥雞|炸雞/,
+    queries: [
+      "fried chicken meme funny",
+      "fried chicken eating reaction",
+      "chicken cutlet taiwan",
+    ],
+  },
+  {
+    pattern: /雞|chicken/i,
+    queries: ["fried chicken meme", "chicken funny reaction"],
+  },
+  {
+    pattern: /珍珠奶茶|手搖|奶茶|boba|bubble tea/i,
+    queries: ["boba milk tea meme", "bubble tea reaction funny"],
+  },
+  {
+    pattern: /咖啡|拿鐵|latte/i,
+    queries: ["coffee meme reaction", "latte funny"],
+  },
+  {
+    pattern: /豆花/,
+    queries: ["taiwan dessert meme", "shaved ice dessert funny"],
+  },
+  {
+    pattern: /便當/,
+    queries: ["bento box meme", "lunch box eating funny"],
+  },
+  {
+    pattern: /火鍋|麻辣/,
+    queries: ["hot pot meme reaction", "spicy food sweating funny"],
+  },
+  {
+    pattern: /拉麵|ramen/i,
+    queries: ["ramen eating meme", "noodle slurp funny reaction"],
+  },
+  {
+    pattern: /寿司|壽司|sushi/i,
+    queries: ["sushi eating meme funny"],
+  },
+  {
+    pattern: /牛排|steak/i,
+    queries: ["steak eating meme reaction"],
+  },
+  {
+    pattern: /披萨|披薩|pizza/i,
+    queries: ["pizza eating meme funny"],
+  },
+  {
+    pattern: /汉堡|漢堡|burger/i,
+    queries: ["burger eating meme funny"],
+  },
+  {
+    pattern: /吐司|toast/i,
+    queries: ["toast breakfast meme funny"],
+  },
+  {
+    pattern: /啤酒|bar|酒吧/i,
+    queries: ["beer cheers meme funny"],
+  },
+  {
+    pattern: /蛋糕|甜點|甜品|dessert/i,
+    queries: ["dessert happy meme", "cake eating funny"],
+  },
+  {
+    pattern: /超市|全聯|costco|ikea/i,
+    queries: ["grocery shopping meme", "shopping cart funny"],
+  },
+  {
+    pattern: /机票|機票|飛機|flight/i,
+    queries: ["airport travel meme", "plane tired funny"],
+  },
+];
+
 /** 插畫／貼圖／諧音梗（如 SEND NOODS） */
 const BLOCK_MEME_PATTERN =
   /send[- ]?noods|noods-happy|happy-frog|tea[- ]?time[- ]?eating|fork-and-kn|illustration|sticker[- ]?pack|kawaii[- ]?art|greeting[- ]?card|cartoon[- ]?eating/i;
@@ -199,6 +286,36 @@ function isMemeGif(gif) {
 }
 
 /**
+ * 品項導向搜尋：允許食物／吃喝反應類 GIF（仍排除貼圖風）
+ * @param {object} gif
+ */
+function isItemContextGif(gif) {
+  if (!gif || gif.type !== "gif") return false;
+
+  const slug = (gif.slug || "").toLowerCase();
+  const title = (gif.title || "").toLowerCase();
+  const tags = (gif.tags || []).join(" ").toLowerCase();
+  const blob = `${slug} ${title} ${tags}`;
+
+  if (BLOCK_MEME_PATTERN.test(blob)) return false;
+  if (isMemeGif(gif)) return true;
+
+  const ITEM_SIGNAL =
+    /chicken|fried|food|eating|eat|drink|boba|tea|coffee|ramen|noodle|hot.?pot|steak|pizza|burger|sushi|dessert|cake|hungry|yummy|delicious|tasty|mukbang|chef|cooking|restaurant|snack|美食|吃|喝|雞|排|奶茶|火鍋|麵/i;
+
+  return ITEM_SIGNAL.test(blob);
+}
+
+/**
+ * @param {object} gif
+ * @param {{ itemContext?: boolean }} [options]
+ */
+function isAcceptableGif(gif, options = {}) {
+  if (options.itemContext) return isItemContextGif(gif);
+  return isMemeGif(gif);
+}
+
+/**
  * @template T
  * @param {T[]} arr
  * @param {number} n
@@ -215,17 +332,94 @@ function pickRandom(arr, n = 1) {
 }
 
 /**
- * 依記帳內容組出多組「梗圖向」搜尋字（非寫實場景）
+ * @param {string} q
+ * @param {Set<string>} seen
+ */
+function pushQuery(seen, list, q) {
+  const trimmed = (q || "").trim();
+  if (!trimmed) return;
+  const key = trimmed.toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  list.push(trimmed);
+}
+
+/**
+ * 從品項、原始輸入、tags 組出「品項優先」的 Giphy 關鍵字
  * @param {object} data
  * @returns {string[]}
  */
-function buildGiphySearchQueries(data) {
+function buildItemLedGiphyQueries(data) {
+  const item = (data.item || "").trim();
+  const raw = (data.rawText || "").trim();
+  const combined = `${item} ${raw}`.trim();
+  /** @type {string[]} */
+  const queries = [];
+  const seen = new Set();
+
+  for (const { pattern, queries: qs } of ITEM_GIPHY_PATTERNS) {
+    if (pattern.test(item) || pattern.test(raw) || pattern.test(combined)) {
+      for (const q of qs) pushQuery(seen, queries, q);
+    }
+  }
+
+  const coreItem = item
+    .replace(/\d+(\.\d+)?/g, "")
+    .replace(/[元塊块¥$€£]/g, "")
+    .trim();
+
+  if (coreItem.length >= 2) {
+    pushQuery(seen, queries, `${coreItem} funny`);
+    if (/[\u4e00-\u9fff]/.test(coreItem)) {
+      pushQuery(seen, queries, `${coreItem} 搞笑`);
+      pushQuery(seen, queries, `${coreItem} 美食`);
+    } else {
+      pushQuery(seen, queries, `${coreItem} meme funny`);
+      pushQuery(seen, queries, `${coreItem} reaction`);
+    }
+  }
+
+  const rawCore = raw
+    .replace(/\d+(\.\d+)?/g, "")
+    .replace(/[元塊块]/g, "")
+    .trim();
+  if (rawCore && rawCore !== coreItem && rawCore.length >= 2) {
+    pushQuery(seen, queries, `${rawCore} funny`);
+    if (/[\u4e00-\u9fff]/.test(rawCore)) {
+      pushQuery(seen, queries, `${rawCore} 搞笑`);
+    }
+  }
+
+  if (Array.isArray(data.tags)) {
+    for (const tag of data.tags.slice(0, 3)) {
+      const t = String(tag || "").trim();
+      if (t.length < 2) continue;
+      pushQuery(seen, queries, `${t} funny`);
+      if (/[\u4e00-\u9fff]/.test(t)) pushQuery(seen, queries, `${t} 美食`);
+    }
+  }
+
+  const english = combined.match(/[a-zA-Z]{3,}/gi) || [];
+  for (const word of [...new Set(english.map((w) => w.toLowerCase()))].slice(0, 2)) {
+    pushQuery(seen, queries, `${word} meme funny`);
+  }
+
+  return queries.slice(0, 10);
+}
+
+/**
+ * 分類級備援搜尋（品項搜不到時）
+ * @param {object} data
+ * @returns {string[]}
+ */
+function buildCategoryGiphyQueries(data) {
   const item = data.item || "";
   const category = data.category || "";
   const amount = Number(data.amount) || 0;
   const twd = Number(data.twdAmount) || 0;
   /** @type {string[]} */
   const queries = [];
+  const seen = new Set();
 
   const isPet =
     category === "pet" ||
@@ -246,78 +440,80 @@ function buildGiphySearchQueries(data) {
   const isShop = category === "shopping" || /買|購物|逛街/i.test(item);
 
   if (isPet) {
-    queries.push(...pickRandom(PET_MEMES, 3));
+    for (const q of pickRandom(PET_MEMES, 2)) pushQuery(seen, queries, q);
   } else if (isDrink) {
-    queries.push(
-      "boba milk tea meme reaction",
-      "sweet drink sugar meme reaction",
-      "drinking meme funny reaction",
-      "spongebob drinking meme",
-      ...pickRandom(PET_MEMES, 1)
-    );
+    pushQuery(seen, queries, "boba milk tea meme reaction");
+    pushQuery(seen, queries, "drinking meme funny reaction");
   } else if (isFood) {
-    queries.push(
-      "food reaction meme",
-      "mukbang meme reaction funny",
-      "hungry shiba meme",
-      ...pickRandom(PET_MEMES, 1)
-    );
+    pushQuery(seen, queries, "food reaction meme funny");
+    pushQuery(seen, queries, "mukbang meme reaction");
   } else if (isTravel) {
-    queries.push(
-      "travel tired meme",
-      "vacation broke meme funny",
-      "lost tourist meme",
-      "airport delay meme reaction"
-    );
+    pushQuery(seen, queries, "travel tired meme");
+    pushQuery(seen, queries, "vacation meme funny");
   } else if (isShop) {
-    queries.push(
-      "shopping regret meme",
-      "online shopping meme funny",
-      "buying stuff broke meme"
-    );
-  } else if (/豆花/i.test(item)) {
-    queries.push("dessert meme funny", "shocked cat meme", "food reaction meme");
-  } else if (/火鍋|麻辣/i.test(item)) {
-    queries.push("spicy food meme reaction", "sweating meme funny");
+    pushQuery(seen, queries, "shopping regret meme");
   } else {
-    queries.push(...pickRandom(REACTION_MEMES, 2));
+    for (const q of pickRandom(REACTION_MEMES, 1)) pushQuery(seen, queries, q);
   }
 
   if (twd >= 500 || amount >= 100) {
-    queries.push(...pickRandom(MONEY_MEMES, 2));
+    for (const q of pickRandom(MONEY_MEMES, 1)) pushQuery(seen, queries, q);
   }
 
-  queries.push(...pickRandom(PET_MEMES, 2));
-  queries.push(...pickRandom(REACTION_MEMES, 1));
-  queries.push(...pickRandom(MONEY_MEMES, 1));
+  for (const q of pickRandom(CLASSIC_MEMES, 2)) pushQuery(seen, queries, q);
 
-  const head = pickRandom(CLASSIC_MEMES, 3);
-  const unique = [
-    ...new Set([...head, ...queries].map((q) => q.trim()).filter(Boolean)),
-  ];
-  return unique.slice(0, 14);
+  return queries.slice(0, 8);
 }
 
 /**
- * 刪除帳目用的梗圖搜尋
+ * 梗圖搜尋計畫：先品項、再分類、最後通用
+ * @param {object} data
+ * @returns {{ itemQueries: string[], fallbackQueries: string[] }}
  */
-function buildDeleteGiphyQueries() {
-  return [
-    ...pickRandom(CLASSIC_MEMES, 2),
-    "delete undo meme funny",
-    "cat guilty meme",
-    "dog oops meme",
-    "nope reaction meme",
-    ...pickRandom(PET_MEMES, 2),
-  ];
+function buildGiphySearchPlan(data) {
+  const itemQueries = buildItemLedGiphyQueries(data);
+  const fallbackQueries = buildCategoryGiphyQueries(data);
+  return { itemQueries, fallbackQueries };
+}
+
+/**
+ * 依記帳內容組出多組 Giphy 搜尋字（相容舊 API）
+ * @param {object} data
+ * @returns {string[]}
+ */
+function buildGiphySearchQueries(data) {
+  const { itemQueries, fallbackQueries } = buildGiphySearchPlan(data);
+  return [...itemQueries, ...fallbackQueries].slice(0, 14);
+}
+
+/**
+ * 刪除帳目用的梗圖搜尋（仍優先該筆品項）
+ * @param {object} [deleted]
+ * @returns {{ itemQueries: string[], fallbackQueries: string[] }}
+ */
+function buildDeleteGiphyQueries(deleted = {}) {
+  const itemQueries = buildItemLedGiphyQueries(deleted);
+  const seen = new Set();
+  /** @type {string[]} */
+  const fallbackQueries = [];
+
+  pushQuery(seen, fallbackQueries, "delete undo meme funny");
+  pushQuery(seen, fallbackQueries, "oops reaction meme");
+  for (const q of pickRandom(PET_MEMES, 1)) pushQuery(seen, fallbackQueries, q);
+  for (const q of pickRandom(CLASSIC_MEMES, 2)) pushQuery(seen, fallbackQueries, q);
+
+  return { itemQueries, fallbackQueries };
 }
 
 /**
  * 單次 Giphy 搜尋（隨機 offset 增加變化）
  * @param {string} apiKey
  * @param {string} query
+ * @param {{ itemContext?: boolean }} [options]
  */
-async function fetchGiphyOnce(apiKey, query) {
+async function fetchGiphyOnce(apiKey, query, options = {}) {
+  const lang = /[\u4e00-\u9fff]/.test(query) ? "zh" : "en";
+
   const res = await axios.get("https://api.giphy.com/v1/gifs/search", {
     params: {
       api_key: apiKey,
@@ -325,7 +521,7 @@ async function fetchGiphyOnce(apiKey, query) {
       limit: 15,
       offset: Math.floor(Math.random() * 40),
       rating: "g",
-      lang: "en",
+      lang,
     },
     timeout: 8000,
   });
@@ -334,14 +530,14 @@ async function fetchGiphyOnce(apiKey, query) {
   const shuffled = pickRandom(list, list.length);
 
   for (const gif of shuffled) {
-    if (!isMemeGif(gif)) continue;
+    if (!isAcceptableGif(gif, options)) continue;
     const url = pickLineImageUrl(gif);
     if (url) return url;
   }
 
   if (list.length > 0) {
     console.warn(
-      `[Meme] 「${query}」有 ${list.length} 筆但無合格迷因圖（已過濾貼圖/插畫）`
+      `[Meme] 「${query}」有 ${list.length} 筆但無合格圖（itemContext=${!!options.itemContext}）`
     );
   }
   return null;
@@ -350,33 +546,55 @@ async function fetchGiphyOnce(apiKey, query) {
 /**
  * Giphy 搜尋（需 GIPHY_API_KEY）
  * @param {string|string[]} queryOrQueries
+ * @param {{ itemQueries?: string[] }} [options]
  * @returns {Promise<string|null>}
  */
-async function searchGiphyUrl(queryOrQueries) {
+async function searchGiphyUrl(queryOrQueries, options = {}) {
   const apiKey = process.env.GIPHY_API_KEY?.trim();
   if (!apiKey) {
     console.log("[Meme] 略過 Giphy：未設定 GIPHY_API_KEY");
     return null;
   }
 
+  const itemLed = (options.itemQueries || []).filter(Boolean);
   const list = Array.isArray(queryOrQueries)
     ? queryOrQueries
     : queryOrQueries
       ? [queryOrQueries]
       : [];
 
-  const fallbacks = [...list, ...pickRandom(GENERIC_MEME_FALLBACKS, 4)];
+  const fallbacks = [...list, ...pickRandom(GENERIC_MEME_FALLBACKS, 3)];
 
   const tried = new Set();
+
+  for (const q of itemLed) {
+    const key = q.toLowerCase();
+    if (!q || tried.has(key)) continue;
+    tried.add(key);
+
+    try {
+      const url = await fetchGiphyOnce(apiKey, q, { itemContext: true });
+      if (url) {
+        console.log("[Meme] Giphy 品項:", q, "→", url.slice(0, 70) + "...");
+        return url;
+      }
+    } catch (err) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.message || err.message;
+      console.warn(`[Meme] Giphy 品項搜尋失敗 (${q}):`, status || msg);
+      if (status === 403 || status === 401) return null;
+    }
+  }
+
   for (const q of fallbacks) {
     const key = q.toLowerCase();
     if (!q || tried.has(key)) continue;
     tried.add(key);
 
     try {
-      const url = await fetchGiphyOnce(apiKey, q);
+      const url = await fetchGiphyOnce(apiKey, q, { itemContext: false });
       if (url) {
-        console.log("[Meme] Giphy 梗圖:", q, "→", url.slice(0, 70) + "...");
+        console.log("[Meme] Giphy 備援:", q, "→", url.slice(0, 70) + "...");
         return url;
       }
     } catch (err) {
@@ -393,10 +611,10 @@ async function searchGiphyUrl(queryOrQueries) {
 
 /**
  * @param {object} data
- * @returns {string[]}
+ * @returns {{ itemQueries: string[], fallbackQueries: string[] }}
  */
 function giphySearchQuery(data) {
-  return buildGiphySearchQueries(data);
+  return buildGiphySearchPlan(data);
 }
 
 function pickDeleteMeme(deleted) {
@@ -412,10 +630,13 @@ module.exports = {
   pickRuleMeme,
   searchGiphyUrl,
   giphySearchQuery,
+  buildGiphySearchPlan,
+  buildItemLedGiphyQueries,
   buildGiphySearchQueries,
   buildDeleteGiphyQueries,
   pickDeleteMeme,
   pickLineImageUrl,
   isLineSafeImageUrl,
   isMemeGif,
+  isItemContextGif,
 };

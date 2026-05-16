@@ -51,6 +51,10 @@ const CATEGORY_ALIASES = {
   購物: "shopping",
   购物: "shopping",
   retail: "shopping",
+  家具: "shopping",
+  家居: "shopping",
+  家電: "shopping",
+  "3c": "shopping",
 
   grocery: "grocery",
   超市: "grocery",
@@ -206,7 +210,32 @@ const KEYWORD_RULES = [
   },
   {
     category: "grocery",
-    keywords: ["全聯", "家樂福", "costco", "超市", "grocery", "px mart", "菜市場"],
+    keywords: [
+      "全聯",
+      "家樂福",
+      "costco",
+      "超市",
+      "grocery",
+      "px mart",
+      "菜市場",
+      "衛生紙",
+      "衛生棉",
+      "洗髮",
+      "沐浴",
+      "牙膏",
+      "牙刷",
+      "洗衣精",
+      "柔軟精",
+      "洗碗精",
+      "醬油",
+      "米",
+      "麵條",
+      "泡麵",
+      "零食",
+      "食材",
+      "生鮮",
+      "日用品",
+    ],
   },
   {
     category: "shopping",
@@ -216,9 +245,65 @@ const KEYWORD_RULES = [
       "pchome",
       "amazon",
       "3c",
+      "鍵盤",
+      "keyboard",
+      "滑鼠",
+      "mouse",
+      "螢幕",
+      "顯示器",
+      "monitor",
+      "耳機",
+      "headset",
+      "硬碟",
+      "ssd",
+      "隨身碟",
+      "usb hub",
+      "充電器",
+      "行動電源",
+      "筆電",
+      "電腦",
+      "平板",
+      "ipad",
+      "電腦配件",
+      "3c配件",
+      "電子產品",
+      "椅子",
+      "沙發",
+      "家具",
+      "家居",
+      "家居用品",
+      "居家",
+      "家飾",
+      "寢具",
+      "枕頭",
+      "床墊",
+      "床單",
+      "收納",
+      "衣架",
+      "茶几",
+      "書桌",
+      "衣櫃",
+      "燈具",
+      "檯燈",
+      "家電",
+      "吸塵",
+      "掃地機器人",
+      "掃地機",
+      "電風扇",
+      "冷氣",
+      "洗衣機",
+      "ikea",
+      "宜家",
+      "無印",
+      "muji",
+      "uniclo",
+      "優衣庫",
       "衣服",
       "鞋子",
       "包包",
+      "手錶",
+      "飾品",
+      "玩具",
       "購物",
       "shopping",
     ],
@@ -300,6 +385,27 @@ const KEYWORD_RULES = [
     keywords: ["美容", "美甲", "美髮", "化妝", "保養品"],
   },
   {
+    category: "work",
+    keywords: [
+      "辦公",
+      "办公",
+      "文具",
+      "影印",
+      "碳粉",
+      "墨水匣",
+      "墨水",
+      "白板筆",
+      "白板",
+      "釘書機",
+      "資料夾",
+      "便利貼",
+      "碎紙機",
+      "辦公椅",
+      "辦公桌",
+      "office supply",
+    ],
+  },
+  {
     category: "transfer",
     keywords: ["轉帳", "匯款", "line pay 轉"],
   },
@@ -308,6 +414,63 @@ const KEYWORD_RULES = [
     keywords: ["還款", "還債", "借貸利息"],
   },
 ];
+
+/**
+ * 語意 tag 片段 → category（item 難辨時用 AI tags 補強）
+ * @type {{ sub: string, category: string }[]}
+ */
+const TAG_CATEGORY_HINTS = [
+  { sub: "家具", category: "shopping" },
+  { sub: "家居", category: "shopping" },
+  { sub: "居家", category: "shopping" },
+  { sub: "寢具", category: "shopping" },
+  { sub: "家電", category: "shopping" },
+  { sub: "3c", category: "shopping" },
+  { sub: "電腦配件", category: "shopping" },
+  { sub: "電子產品", category: "shopping" },
+  { sub: "服飾", category: "shopping" },
+  { sub: "文具", category: "work" },
+  { sub: "辦公用品", category: "work" },
+  { sub: "食材", category: "grocery" },
+  { sub: "生鮮", category: "grocery" },
+  { sub: "日用品", category: "grocery" },
+  { sub: "餐廳", category: "food" },
+  { sub: "小吃", category: "food" },
+  { sub: "咖啡", category: "drink" },
+  { sub: "手搖", category: "drink" },
+  { sub: "交通", category: "transport" },
+  { sub: "景點", category: "travel" },
+  { sub: "住宿", category: "travel" },
+  { sub: "門票", category: "travel" },
+  { sub: "寵物", category: "pet" },
+  { sub: "美容", category: "beauty" },
+  { sub: "醫療", category: "medical" },
+  { sub: "訂閱", category: "subscription" },
+  { sub: "禮物", category: "gift" },
+];
+
+/**
+ * @param {string[]} tags
+ * @returns {string|null}
+ */
+function inferCategoryFromTags(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) return null;
+
+  for (const tag of tags) {
+    const t = String(tag).trim();
+    if (!t) continue;
+    const lower = t.toLowerCase();
+
+    for (const hint of TAG_CATEGORY_HINTS) {
+      const needle = hint.sub.toLowerCase();
+      if (lower.includes(needle) || needle.includes(lower)) {
+        return hint.category;
+      }
+    }
+  }
+
+  return null;
+}
 
 /**
  * @param {string} [value]
@@ -364,15 +527,22 @@ function resolveCategory(aiCategory, item, rawText, tags = [], categoryHint = nu
     return fromAi;
   }
 
-  if (categoryHint && normalizeCategory(categoryHint)) {
-    console.log("[Category] 語意提示:", categoryHint, "←", item);
-    return categoryHint;
+  const hint = normalizeCategory(categoryHint);
+  if (hint && hint !== "other") {
+    console.log("[Category] 語意提示:", hint, "←", item);
+    return hint;
   }
 
   const fromKeywords = inferCategoryFromItem(item, rawText, tags);
   if (fromKeywords) {
     console.log("[Category] 關鍵字:", fromKeywords, "←", item);
     return fromKeywords;
+  }
+
+  const fromTags = inferCategoryFromTags(tags);
+  if (fromTags) {
+    console.log("[Category] 語意 tag:", fromTags, "←", item);
+    return fromTags;
   }
 
   if (fromAi) return fromAi;

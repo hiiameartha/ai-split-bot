@@ -1,52 +1,68 @@
 /**
- * MoodPay - QuickChart 統一主題（dark fintech dashboard）
+ * MoodPay - QuickChart 主題（粉彩可愛 · 品牌色）
+ * 對應品牌：薄荷綠、粉紅、淡黃、薰衣草紫、海軍藍字
  */
 
 const CHART_DEFAULTS = {
   width: 520,
   height: 340,
   devicePixelRatio: 2,
-  backgroundColor: "#0B1220",
+  backgroundColor: "#EAF9F4",
   format: "png",
 };
 
-const FONT_FAMILY = "'Helvetica Neue', 'PingFang TC', 'Noto Sans TC', sans-serif";
+const FONT_FAMILY =
+  "'PingFang TC', 'Noto Sans TC', 'Helvetica Neue', sans-serif";
+
+/** 品牌色 */
+const BRAND = {
+  mint: "#B8EBD8",
+  mintLight: "#EAF9F4",
+  pink: "#FFB8D4",
+  yellow: "#FFE494",
+  lavender: "#C4B5FD",
+  sky: "#93C5FD",
+  coral: "#FDA4AF",
+  navy: "#2D3A5C",
+  navySoft: "#5C6B8A",
+  white: "#FFFFFF",
+  card: "#F7FDFB",
+};
 
 const TEXT = {
-  primary: "#F1F5F9",
-  secondary: "#94A3B8",
-  muted: "#64748B",
+  primary: BRAND.navy,
+  secondary: BRAND.navySoft,
+  muted: "#8B9BB5",
 };
 
 const GRID = {
-  color: "rgba(148, 163, 184, 0.12)",
-  borderColor: "rgba(148, 163, 184, 0.2)",
+  color: "rgba(45, 58, 92, 0.06)",
+  borderColor: "rgba(45, 58, 92, 0.1)",
 };
 
-/** 分類色盤（漸層感、區隔明顯） */
+/** 分類色（粉彩、對應品牌插畫圓餅） */
 const CATEGORY_COLORS = {
-  food: "#FF6B6B",
-  drink: "#4ECDC4",
-  transport: "#45B7D1",
-  shopping: "#A78BFA",
-  grocery: "#F59E0B",
-  entertainment: "#F472B6",
-  travel: "#38BDF8",
-  rent: "#FB923C",
-  utility: "#94A3B8",
-  medical: "#34D399",
-  pet: "#C084FC",
-  subscription: "#60A5FA",
-  gift: "#FB7185",
-  study: "#2DD4BF",
-  beauty: "#E879F9",
-  work: "#818CF8",
-  debt: "#F87171",
-  transfer: "#9CA3AF",
-  other: "#6B7280",
+  food: "#FFB5C2",
+  drink: "#7EEDD9",
+  transport: "#93C5FD",
+  shopping: "#C4B5FD",
+  grocery: "#FFE494",
+  entertainment: "#F9A8D4",
+  travel: "#7DD3FC",
+  rent: "#FDBA74",
+  utility: "#A5B4FC",
+  medical: "#86EFAC",
+  pet: "#D8B4FE",
+  subscription: "#BAE6FD",
+  gift: "#FDA4AF",
+  study: "#99F6E4",
+  beauty: "#F0ABFC",
+  work: "#A5B4FC",
+  debt: "#FCA5A5",
+  transfer: "#CBD5E1",
+  other: "#D1D5DB",
 };
 
-/** 分類顯示名稱與 emoji */
 const CATEGORY_META = {
   food: { label: "食物", emoji: "🍜" },
   drink: { label: "飲料", emoji: "🧋" },
@@ -66,50 +82,51 @@ const CATEGORY_META = {
   work: { label: "工作", emoji: "💼" },
   debt: { label: "還款", emoji: "💳" },
   transfer: { label: "轉帳", emoji: "↔️" },
-  other: { label: "其他", emoji: "💰" },
+  other: { label: "其他", emoji: "📦" },
 };
 
 const DEBT_COLORS = {
-  positive: "#34D399",
-  negative: "#F87171",
-  neutral: "#64748B",
+  positive: "#6EE7B7",
+  negative: "#FDA4AF",
+  neutral: "#D1D5DB",
 };
 
+/** 折線圖：薰衣草線 + 薄荷填色 */
 const GRADIENT_LINE = {
-  borderColor: "#6366F1",
-  backgroundColor: "rgba(99, 102, 241, 0.25)",
-  pointBackgroundColor: "#818CF8",
-  pointBorderColor: "#E0E7FF",
-  pointRadius: 4,
-  pointHoverRadius: 6,
-  tension: 0.42,
+  borderColor: BRAND.lavender,
+  backgroundColor: "rgba(196, 181, 253, 0.35)",
+  pointBackgroundColor: BRAND.white,
+  pointBorderColor: BRAND.lavender,
+  pointBorderWidth: 2,
+  pointRadius: 5,
+  pointHoverRadius: 7,
+  tension: 0.45,
   fill: true,
 };
 
-/** 橫條圖漸層（由深到亮） */
-const BAR_GRADIENT = [
-  "#6366F1",
-  "#818CF8",
-  "#A78BFA",
-  "#C084FC",
-  "#38BDF8",
-  "#2DD4BF",
-  "#F472B6",
-  "#FB923C",
+/** 成員排行等無分類時的色序 */
+const PASTEL_SEQUENCE = [
+  BRAND.lavender,
+  BRAND.pink,
+  BRAND.mint,
+  BRAND.yellow,
+  BRAND.sky,
+  BRAND.coral,
+  "#99F6E4",
+  "#F9A8D4",
 ];
 
-/**
- * Chart.js 共用 options 基底
- * @param {string} title
- */
+/** @deprecated 請用 getCategoryColor */
+const BAR_GRADIENT = PASTEL_SEQUENCE;
+
 function baseChartOptions(title) {
   return {
     responsive: true,
     maintainAspectRatio: true,
-    layout: { padding: { top: 12, right: 16, bottom: 8, left: 8 } },
+    layout: { padding: { top: 16, right: 20, bottom: 12, left: 12 } },
     plugins: {
       legend: {
-        display: true,
+        display: false,
         position: "bottom",
         labels: {
           color: TEXT.secondary,
@@ -123,8 +140,8 @@ function baseChartOptions(title) {
         display: true,
         text: title,
         color: TEXT.primary,
-        font: { family: FONT_FAMILY, size: 16, weight: "600" },
-        padding: { bottom: 16 },
+        font: { family: FONT_FAMILY, size: 15, weight: "bold" },
+        padding: { bottom: 14 },
       },
       datalabels: {
         display: false,
@@ -133,28 +150,68 @@ function baseChartOptions(title) {
   };
 }
 
-/**
- * @param {string} key
- */
+function productTooltip() {
+  return {
+    backgroundColor: BRAND.white,
+    titleColor: TEXT.primary,
+    bodyColor: TEXT.secondary,
+    borderColor: "rgba(45, 58, 92, 0.12)",
+    borderWidth: 1,
+    padding: 12,
+    cornerRadius: 10,
+    displayColors: true,
+  };
+}
+
+function pieDatalabelStyle() {
+  return {
+    display: true,
+    color: BRAND.navy,
+    font: { weight: "bold", size: 11, family: FONT_FAMILY },
+    textStrokeColor: BRAND.white,
+    textStrokeWidth: 3,
+  };
+}
+
+function doughnutSliceStyle() {
+  return {
+    borderColor: BRAND.white,
+    borderWidth: 3,
+    hoverOffset: 8,
+    hoverBorderColor: BRAND.navy,
+  };
+}
+
+function barStyle() {
+  return {
+    borderRadius: 14,
+    borderSkipped: false,
+    borderWidth: 0,
+  };
+}
+
 function getCategoryMeta(key) {
   const k = (key || "other").toLowerCase();
   return CATEGORY_META[k] || { label: k, emoji: "📌" };
 }
 
-/**
- * @param {string} key
- * @param {number} index
- */
 function getCategoryColor(key, index = 0) {
   const k = (key || "other").toLowerCase();
   if (CATEGORY_COLORS[k]) return CATEGORY_COLORS[k];
-  const fallback = ["#6366F1", "#8B5CF6", "#EC4899", "#14B8A6", "#F97316"];
-  return fallback[index % fallback.length];
+  return PASTEL_SEQUENCE[index % PASTEL_SEQUENCE.length];
+}
+
+/**
+ * @param {string[]} categories
+ */
+function colorsForCategories(categories) {
+  return categories.map((cat, i) => getCategoryColor(cat, i));
 }
 
 module.exports = {
   CHART_DEFAULTS,
   FONT_FAMILY,
+  BRAND,
   TEXT,
   GRID,
   CATEGORY_COLORS,
@@ -162,7 +219,13 @@ module.exports = {
   DEBT_COLORS,
   GRADIENT_LINE,
   BAR_GRADIENT,
+  PASTEL_SEQUENCE,
   baseChartOptions,
+  productTooltip,
+  pieDatalabelStyle,
+  doughnutSliceStyle,
+  barStyle,
   getCategoryMeta,
   getCategoryColor,
+  colorsForCategories,
 };

@@ -1,5 +1,5 @@
 /**
- * QuickChart URL 產生測試（不需網路）
+ * QuickChart URL 產生測試（需網路）
  * node scripts/test-charts.js
  */
 
@@ -9,6 +9,7 @@ const {
   generateMonthlyLineChart,
   generateDebtBarChart,
   generateMemberComparisonChart,
+  LINE_IMAGE_URL_MAX,
 } = require("../services/charts");
 
 const sampleTx = [
@@ -46,39 +47,53 @@ const sampleTx = [
     relation: "self",
     category: "drink",
   },
+  {
+    date: "20260515",
+    payer: "我",
+    consumer: "我",
+    item: "鍵盤",
+    amount: 2000,
+    currency: "TWD",
+    twdAmount: 2000,
+    relation: "self",
+    category: "shopping",
+  },
 ];
 
-let ok = 0;
+async function main() {
+  let passed = 0;
+  const total = 5;
 
-const bar = generateDashboardBarChart(sampleTx);
-if (bar && bar.startsWith("https://quickchart.io/chart")) {
-  console.log("✅ dashboard bar URL");
-  ok += 1;
-} else console.log("❌ dashboard bar");
+  const bar = await generateDashboardBarChart(sampleTx);
+  const barOk = bar && bar.length <= LINE_IMAGE_URL_MAX;
+  console.log(barOk ? "✅" : "❌", "dashboard bar URL", bar?.length || 0);
+  if (barOk) passed += 1;
 
-const pie = generateCategoryPieChart(sampleTx);
-if (pie && pie.startsWith("https://quickchart.io/chart")) {
-  console.log("✅ category pie URL (excl. other)");
-  ok += 1;
-} else console.log("❌ category pie");
+  const pie = await generateCategoryPieChart(sampleTx);
+  const pieOk = pie && pie.length <= LINE_IMAGE_URL_MAX;
+  console.log(pieOk ? "✅" : "❌", "category pie URL", pie?.length || 0);
+  if (pieOk) passed += 1;
 
-const line = generateMonthlyLineChart(sampleTx);
-if (line && line.includes("quickchart.io")) {
-  console.log("✅ monthly line URL");
-  ok += 1;
-} else console.log("❌ monthly line");
+  const line = await generateMonthlyLineChart(sampleTx);
+  const lineOk = line && line.length <= LINE_IMAGE_URL_MAX;
+  console.log(lineOk ? "✅" : "❌", "monthly line URL", line?.length || 0);
+  if (lineOk) passed += 1;
 
-const debt = generateDebtBarChart({ 男友: 500, 我: -500 });
-if (debt && debt.includes("quickchart.io")) {
-  console.log("✅ debt bar URL");
-  ok += 1;
-} else console.log("❌ debt bar");
+  const debt = await generateDebtBarChart({ 男友: 500, 我: -500 });
+  const debtOk = debt && debt.length <= LINE_IMAGE_URL_MAX;
+  console.log(debtOk ? "✅" : "❌", "debt bar URL", debt?.length || 0);
+  if (debtOk) passed += 1;
 
-const members = generateMemberComparisonChart(sampleTx);
-if (members && members.includes("quickchart.io")) {
-  console.log("✅ members bar URL");
-  ok += 1;
-} else console.log("❌ members bar");
+  const members = await generateMemberComparisonChart(sampleTx);
+  const membersOk = members && members.length <= LINE_IMAGE_URL_MAX;
+  console.log(membersOk ? "✅" : "❌", "members bar URL", members?.length || 0);
+  if (membersOk) passed += 1;
 
-console.log(`\n通過 ${ok}/5`);
-process.exit(ok === 5 ? 0 : 1);
+  console.log(`\n通過 ${passed}/${total}`);
+  process.exit(passed === total ? 0 : 1);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

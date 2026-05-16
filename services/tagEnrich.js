@@ -91,6 +91,26 @@ const SEMANTIC_RULES = [
     tags: ["交通"],
     category: "transport",
   },
+  {
+    pattern: /鍵盤|keyboard|滑鼠|mouse|螢幕|顯示器|monitor/i,
+    tags: ["3C", "電腦配件"],
+    category: "shopping",
+  },
+  {
+    pattern: /椅子|沙發|床墊|衣櫃|茶几|書桌|家具|家飾|推進器/i,
+    tags: ["家具", "家居"],
+    category: "shopping",
+  },
+  {
+    pattern: /家電|吸塵|掃地|洗衣機|電風扇|冷氣|微波/i,
+    tags: ["家電", "居家"],
+    category: "shopping",
+  },
+  {
+    pattern: /文具|影印紙|碳粉|墨水匣|釘書機|便利貼|碎紙機|辦公椅|辦公桌/i,
+    tags: ["辦公", "文具"],
+    category: "work",
+  },
 ];
 
 /** 不應作為 tags 的泛用詞（除非無其他標籤） */

@@ -3,31 +3,46 @@
  * https://quickchart.io/documentation/
  */
 
+const axios = require("axios");
 const {
   CHART_DEFAULTS,
   TEXT,
   GRID,
   DEBT_COLORS,
   GRADIENT_LINE,
-  BAR_GRADIENT,
+  PASTEL_SEQUENCE,
   baseChartOptions,
+  productTooltip,
+  pieDatalabelStyle,
+  doughnutSliceStyle,
+  barStyle,
   getCategoryMeta,
   getCategoryColor,
+  colorsForCategories,
 } = require("../utils/chartTheme");
 const {
   summarizeByCategory,
   filterCurrentMonth,
   calculateTotalExpense,
 } = require("./settlement");
-const { parseTransactionDate } = require("../utils/date");
+const { parseTransactionDate, formatChartDayLabel } = require("../utils/date");
+const {
+  relabelTotalsForViewer,
+  filterTransactionsForViewer,
+} = require("./actor");
 
 const QUICKCHART_BASE = "https://quickchart.io/chart";
+const QUICKCHART_CREATE = "https://quickchart.io/chart/create";
+
+/** LINE 圖片 originalContentUrl 上限約 2000 字元 */
+const LINE_IMAGE_URL_MAX = 2000;
 
 /**
- * @param {object} chartConfig - Chart.js config
+ * GET 長網址（備援）
+ * @param {object} chartConfig
  * @param {object} [size]
  */
-function buildQuickChartUrl(chartConfig, size = {}) {
+function buildQuickChartGetUrl(chartConfig, size = {}) {
   const w = size.width || CHART_DEFAULTS.width;
   const h = size.height || CHART_DEFAULTS.height;
   const bkg = (size.backgroundColor || CHART_DEFAULTS.backgroundColor).replace(
@@ -47,16 +62,62 @@ function buildQuickChartUrl(chartConfig, size = {}) {
 }
 
 /**
+ * 優先 POST 短網址，避免 LINE 400（URL 過長）
+ * @param {object} chartConfig
+ * @param {object} [size]
+ * @returns {Promise<string|null>}
+ */
+async function resolveQuickChartUrl(chartConfig, size = {}) {
+  const w = size.width || CHART_DEFAULTS.width;
+  const h = size.height || CHART_DEFAULTS.height;
+  const backgroundColor = size.backgroundColor || CHART_DEFAULTS.backgroundColor;
+
+  try {
+    const res = await axios.post(
+      QUICKCHART_CREATE,
+      {
+        chart: chartConfig,
+        width: w,
+        height: h,
+        backgroundColor,
+        format: CHART_DEFAULTS.format,
+        devicePixelRatio: CHART_DEFAULTS.devicePixelRatio,
+      },
+      { timeout: 20000, headers: { "Content-Type": "application/json" } }
+    );
+
+    const url = res.data?.url;
+    if (res.data?.success && url && url.length <= LINE_IMAGE_URL_MAX) {
+      console.log("[Chart] 短網址 OK", url.length, "字元");
+      return url;
+    }
+  } catch (err) {
+    console.warn("[Chart] 短網址建立失敗:", err.message);
+  }
+
+  const fallback = buildQuickChartGetUrl(chartConfig, size);
+  if (fallback.length <= LINE_IMAGE_URL_MAX) {
+    console.log("[Chart] 使用 GET 網址", fallback.length, "字元");
+    return fallback;
+  }
+
+  console.warn("[Chart] 圖表 URL 過長，略過圖片", fallback.length);
+  return null;
+}
+
+/** 圖表軸標籤（分類 emoji + 名稱） */
+function chartCategoryLabel(cat) {
+  const { label, emoji } = getCategoryMeta(cat);
+  return `${emoji} ${label}`;
+}
+
+/**
  * 圓餅圖僅顯示百分比（不顯示原始金額數字）
  */
 function pieDatalabelsPlugin() {
   return {
     datalabels: {
-      display: true,
-      color: "#F8FAFC",
-      font: { weight: "600", size: 12 },
-      textStrokeColor: "rgba(15, 23, 42, 0.5)",
-      textStrokeWidth: 2,
+      ...pieDatalabelStyle(),
       formatter: (value, ctx) => {
         const data = ctx.chart.data.datasets[0].data;
         const total = data.reduce((a, b) => a + b, 0);
@@ -72,7 +133,7 @@ function pieDatalabelsPlugin() {
  * /chart — Dashboard 橫向長條圖（全部分類，含待分類）
  * @param {object[]} transactions
  */
-function generateDashboardBarChart(transactions) {
+async function generateDashboardBarChart(transactions) {
   const byCategory = summarizeByCategory(transactions);
   let entries = Object.entries(byCategory)
     .filter(([, v]) => v > 0)
@@ -82,18 +143,12 @@ function generateDashboardBarChart(transactions) {
   if (entries.length === 0) return null;
 
   const now = new Date();
-  const title = `MoodPay Dashboard · ${now.getFullYear()}/${now.getMonth() + 1}`;
+  const title = `✨ MoodPay 財務偷看 ${now.getFullYear()}/${now.getMonth() + 1}`;
 
-  const labels = entries.map(([cat]) => {
-    const { label, emoji } = getCategoryMeta(cat);
-    return `${emoji} ${label}`;
-  });
+  const labels = entries.map(([cat]) => chartCategoryLabel(cat));
   const data = entries.map(([, v]) => Math.round(v));
-  const colors = entries.map(([cat], i) =>
-    cat === "other"
-      ? "rgba(100, 116, 139, 0.55)"
-      : BAR_GRADIENT[i % BAR_GRADIENT.length]
-  );
+  const cats = entries.map(([cat]) => cat);
+  const colors = colorsForCategories(cats);
 
   const chartConfig = {
     type: "bar",
@@ -101,11 +156,11 @@ function generateDashboardBarChart(transactions) {
       labels,
       datasets: [
         {
+          label: "本月燃燒（台幣）",
           data,
           backgroundColor: colors,
-          borderRadius: 8,
-          borderSkipped: false,
-          barThickness: 22,
+          ...barStyle(),
+          barThickness: 24,
         },
       ],
     },
@@ -115,7 +170,7 @@ function generateDashboardBarChart(transactions) {
       scales: {
         x: {
           ticks: { color: TEXT.muted, font: { size: 10 } },
-          grid: { color: GRID.color },
+          grid: { color: GRID.color, drawBorder: false },
           beginAtZero: true,
         },
         y: {
@@ -130,19 +185,17 @@ function generateDashboardBarChart(transactions) {
           display: true,
           anchor: "end",
           align: "end",
-          color: TEXT.secondary,
-          font: { size: 10 },
+          color: TEXT.primary,
+          font: { size: 10, weight: "600" },
           formatter: (v) => `${formatMoney(v)}`,
         },
         tooltip: {
-          backgroundColor: "#1E293B",
-          titleColor: TEXT.primary,
-          bodyColor: TEXT.secondary,
+          ...productTooltip(),
           callbacks: {
             label(ctx) {
               const total = data.reduce((a, b) => a + b, 0);
               const pct = total ? Math.round((ctx.raw / total) * 100) : 0;
-              return ` ${formatMoney(ctx.raw)} 元 (${pct}%)`;
+              return ` ${formatMoney(ctx.raw)} 元 · ${pct}%`;
             },
           },
         },
@@ -150,7 +203,7 @@ function generateDashboardBarChart(transactions) {
     },
   };
 
-  return buildQuickChartUrl(chartConfig, {
+  return resolveQuickChartUrl(chartConfig, {
     height: 280 + entries.length * 32,
     width: 540,
   });
@@ -159,9 +212,9 @@ function generateDashboardBarChart(transactions) {
 /**
  * /category — 已分類支出圓餅圖（排除 other，避免 94% 灰牆）
  * @param {object[]} transactions
- * @returns {string|null}
+ * @returns {Promise<string|null>}
  */
-function generateCategoryPieChart(transactions) {
+async function generateCategoryPieChart(transactions) {
   const byCategory = summarizeByCategory(transactions);
   const entries = Object.entries(byCategory)
     .filter(([cat, v]) => v > 0 && cat !== "other")
@@ -169,19 +222,13 @@ function generateCategoryPieChart(transactions) {
 
   if (entries.length === 0) return null;
 
-  const labels = entries.map(([cat]) => {
-    const { label, emoji } = getCategoryMeta(cat);
-    return `${emoji} ${label}`;
-  });
+  const labels = entries.map(([cat]) => chartCategoryLabel(cat));
   const data = entries.map(([, v]) => Math.round(v));
   const colors = entries.map(([cat], i) => getCategoryColor(cat, i));
   const total = data.reduce((a, b) => a + b, 0);
 
   const now = new Date();
-  const title = [
-    `已分類支出 · ${now.getMonth() + 1}月`,
-    `合計 ${formatMoney(total)} 元`,
-  ];
+  const title = `🍰 吞錢排行 ${now.getMonth()}月 · ${formatMoney(total)} 元`;
 
   const chartConfig = {
     type: "doughnut",
@@ -189,12 +236,10 @@ function generateCategoryPieChart(transactions) {
       labels,
       datasets: [
         {
+          label: "已分類",
           data,
           backgroundColor: colors,
-          borderColor: "#0F172A",
-          borderWidth: 2,
-          hoverOffset: 10,
-          hoverBorderColor: "#E2E8F0",
+          ...doughnutSliceStyle(),
         },
       ],
     },
@@ -210,15 +255,13 @@ function generateCategoryPieChart(transactions) {
           labels: {
             color: TEXT.secondary,
             font: { size: 11 },
-            padding: 16,
+            padding: 14,
             usePointStyle: true,
+            pointStyle: "circle",
           },
         },
         tooltip: {
-          backgroundColor: "rgba(30, 41, 59, 0.95)",
-          titleColor: TEXT.primary,
-          bodyColor: TEXT.secondary,
-          padding: 12,
+          ...productTooltip(),
           callbacks: {
             label(ctx) {
               const v = ctx.raw;
@@ -231,19 +274,19 @@ function generateCategoryPieChart(transactions) {
     },
   };
 
-  return buildQuickChartUrl(chartConfig, { height: 400, width: 520 });
+  return resolveQuickChartUrl(chartConfig, { height: 400, width: 520 });
 }
 
 /**
  * 本月每日支出折線圖
  * @param {object[]} transactions
  */
-function generateMonthlyLineChart(transactions) {
+async function generateMonthlyLineChart(transactions) {
   const daily = aggregateDailySpending(transactions);
   if (daily.labels.length === 0) return null;
 
   const now = new Date();
-  const title = `MoodPay · ${now.getFullYear()}/${now.getMonth() + 1} 每日支出`;
+  const title = `📈 每日燃燒曲線 · ${now.getFullYear()}/${now.getMonth() + 1}`;
 
   const chartConfig = {
     type: "line",
@@ -251,7 +294,7 @@ function generateMonthlyLineChart(transactions) {
       labels: daily.labels,
       datasets: [
         {
-          label: "支出（台幣）",
+          label: "當日燃燒（台幣）",
           data: daily.values,
           ...GRADIENT_LINE,
           borderWidth: 2.5,
@@ -263,29 +306,30 @@ function generateMonthlyLineChart(transactions) {
       scales: {
         x: {
           ticks: { color: TEXT.secondary, maxRotation: 45, font: { size: 10 } },
-          grid: { color: GRID.color },
+          grid: { color: GRID.color, drawBorder: false },
         },
         y: {
           ticks: { color: TEXT.secondary },
-          grid: { color: GRID.color },
+          grid: { color: GRID.color, drawBorder: false },
           beginAtZero: true,
         },
       },
       plugins: {
         ...baseChartOptions(title).plugins,
         legend: { display: false },
+        tooltip: productTooltip(),
       },
     },
   };
 
-  return buildQuickChartUrl(chartConfig);
+  return resolveQuickChartUrl(chartConfig);
 }
 
 /**
  * 欠款／代墊 bar chart
  * @param {Record<string, number>} balances
  */
-function generateDebtBarChart(balances) {
+async function generateDebtBarChart(balances) {
   const entries = Object.entries(balances).filter(([, v]) => v !== 0);
   if (entries.length === 0) return null;
 
@@ -306,18 +350,17 @@ function generateDebtBarChart(balances) {
           label: "淨額（台幣）",
           data,
           backgroundColor: colors,
-          borderRadius: 8,
-          borderSkipped: false,
+          ...barStyle(),
         },
       ],
     },
     options: {
-      ...baseChartOptions("MoodPay · 欠款／代墊透視"),
+      ...baseChartOptions("🧋 代墊結算"),
       indexAxis: "y",
       scales: {
         x: {
           ticks: { color: TEXT.secondary },
-          grid: { color: GRID.color },
+          grid: { color: GRID.color, drawBorder: false },
         },
         y: {
           ticks: { color: TEXT.primary, font: { size: 12 } },
@@ -325,15 +368,15 @@ function generateDebtBarChart(balances) {
         },
       },
       plugins: {
-        ...baseChartOptions("MoodPay · 欠款／代墊透視").plugins,
+        ...baseChartOptions("🧋 代墊結算").plugins,
         legend: { display: false },
         tooltip: {
-          backgroundColor: "#1E293B",
+          ...productTooltip(),
           callbacks: {
             label(ctx) {
               const v = ctx.raw;
-              if (v > 0) return ` 別人欠 TA ${formatMoney(v)} 元`;
-              if (v < 0) return ` 欠別人 ${formatMoney(Math.abs(v))} 元`;
+              if (v > 0) return ` 應收 ${formatMoney(v)} 元`;
+              if (v < 0) return ` 應付 ${formatMoney(Math.abs(v))} 元`;
               return " 平衡";
             },
           },
@@ -342,29 +385,35 @@ function generateDebtBarChart(balances) {
     },
   };
 
-  return buildQuickChartUrl(chartConfig, { height: 300 + entries.length * 36 });
+  return resolveQuickChartUrl(chartConfig, { height: 300 + entries.length * 36 });
 }
 
 /**
  * 成員消費比較
  * @param {object[]} transactions
  */
-function generateMemberComparisonChart(transactions) {
-  const byMember = summarizeByMember(transactions);
+async function generateMemberComparisonChart(transactions, viewer) {
+  const byMember = relabelTotalsForViewer(
+    summarizeByMember(transactions),
+    viewer,
+    transactions
+  );
   const entries = Object.entries(byMember)
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]);
 
   if (entries.length === 0) return null;
 
-  const labels = entries.map(([name]) => name);
+  const memberEmojis = ["🥇", "🥈", "🥉", "👤", "👤", "👤", "👤", "👤"];
+  const labels = entries.map(([name], i) => {
+    const medal = memberEmojis[i] || "·";
+    return i < 3 ? `${medal} ${name}` : `👤 ${name}`;
+  });
   const data = entries.map(([, v]) => Math.round(v));
-  const colors = labels.map((_, i) =>
-    i === 0 ? "#818CF8" : `hsla(234, 89%, ${68 - i * 8}%, 0.85)`
-  );
+  const colors = labels.map((_, i) => PASTEL_SEQUENCE[i % PASTEL_SEQUENCE.length]);
 
   const now = new Date();
-  const title = `MoodPay · ${now.getFullYear()}/${now.getMonth() + 1} 成員消費`;
+  const title = `🏆 花錢戰力榜 · ${now.getFullYear()}/${now.getMonth() + 1}`;
 
   const chartConfig = {
     type: "bar",
@@ -375,7 +424,7 @@ function generateMemberComparisonChart(transactions) {
           label: "消費金額（台幣）",
           data,
           backgroundColor: colors,
-          borderRadius: 10,
+          ...barStyle(),
         },
       ],
     },
@@ -388,18 +437,19 @@ function generateMemberComparisonChart(transactions) {
         },
         y: {
           ticks: { color: TEXT.secondary },
-          grid: { color: GRID.color },
+          grid: { color: GRID.color, drawBorder: false },
           beginAtZero: true,
         },
       },
       plugins: {
         ...baseChartOptions(title).plugins,
         legend: { display: false },
+        tooltip: productTooltip(),
       },
     },
   };
 
-  return buildQuickChartUrl(chartConfig);
+  return resolveQuickChartUrl(chartConfig);
 }
 
 /**
@@ -454,14 +504,7 @@ function aggregateDailySpending(transactions) {
     const amount = tx.twdAmount || tx.amount || 0;
     if (amount <= 0) continue;
 
-    const d = parseTransactionDate(tx.date);
-    let label = "未知";
-    if (d) {
-      label = `${d.getMonth() + 1}/${d.getDate()}`;
-    } else if (tx.date && String(tx.date).length === 8) {
-      const s = String(tx.date);
-      label = `${parseInt(s.slice(4, 6), 10)}/${parseInt(s.slice(6, 8), 10)}`;
-    }
+    const label = formatChartDayLabel(tx.date);
 
     daily[label] = (daily[label] || 0) + amount;
   }
@@ -488,7 +531,32 @@ function formatMoney(n) {
  */
 function getCurrentMonthContext(allTransactions) {
   const monthTx = filterCurrentMonth(allTransactions);
+  return buildMonthContext(monthTx);
+}
+
+/**
+ * 個人本月（僅自己記帳的列，同 chatId）
+ * @param {object[]} allTransactions
+ * @param {object} actor
+ */
+function getPersonalMonthContext(allTransactions, actor) {
+  const personal = filterTransactionsForViewer(allTransactions, actor);
+  const monthTx = filterCurrentMonth(personal);
+  return buildMonthContext(monthTx, { personalScope: true, actor });
+}
+
+/**
+ * @param {object[]} monthTx
+ * @param {object} [extraMeta]
+ */
+function buildMonthContext(monthTx, extraMeta = {}) {
   const now = new Date();
+  const actor = extraMeta.actor;
+  const scopeLabel =
+    extraMeta.personalScope && actor?.displayName
+      ? `你的帳本 · ${actor.displayName}`
+      : undefined;
+
   return {
     monthTx,
     meta: {
@@ -496,12 +564,16 @@ function getCurrentMonthContext(allTransactions) {
       month: now.getMonth() + 1,
       total: calculateTotalExpense(monthTx),
       count: monthTx.length,
+      personalScope: Boolean(extraMeta.personalScope),
+      scopeLabel,
     },
   };
 }
 
 module.exports = {
-  buildQuickChartUrl,
+  buildQuickChartGetUrl,
+  resolveQuickChartUrl,
+  LINE_IMAGE_URL_MAX,
   generateDashboardBarChart,
   generateCategoryPieChart,
   generateMonthlyLineChart,
@@ -510,4 +582,5 @@ module.exports = {
   summarizeByMember,
   aggregateDailySpending,
   getCurrentMonthContext,
+  getPersonalMonthContext,
 };
