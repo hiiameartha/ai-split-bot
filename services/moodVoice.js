@@ -16,10 +16,12 @@ const REPORT = {
 };
 
 const KPI = {
-  burn: "本月燃燒金額",
-  swipes: "出手次數",
-  dailyBurn: "平均每天燒",
-  perSwipe: "平均每次出手",
+  burn: "本月支出",
+  income: "本月收入",
+  net: "淨額（支−收）",
+  swipes: "記帳筆數",
+  dailyBurn: "平均每天支出",
+  perSwipe: "平均每次支出",
 };
 
 const PHASE_HOOKS = {
@@ -108,8 +110,9 @@ function analyzeSpendingMood(meta, byCategory, monthTx = []) {
   const day = now.getMonth() + 1 === meta.month ? now.getDate() : 15;
   const phase = day <= 10 ? "early" : day >= dim - 4 ? "late" : "mid";
 
-  const total = meta.total || 0;
-  const count = meta.count || 0;
+  const expenseTotal = meta.expenseTotal ?? meta.total ?? 0;
+  const total = expenseTotal;
+  const count = meta.expenseCount ?? meta.count ?? 0;
   const entries = Object.entries(byCategory || {})
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]);
@@ -174,20 +177,36 @@ function formatBrandHeader(reportTitle, meta, hook) {
 }
 
 /**
- * @param {{ total: number, count: number, year: number, month: number }} meta
+ * @param {object} meta
  */
 function formatKpiBlock(meta) {
   const dim = daysInMonth(meta);
-  const dailyAvg =
-    meta.count > 0 ? Math.round(meta.total / Math.max(dim, 1)) : 0;
-  const perTx = meta.count > 0 ? Math.round(meta.total / meta.count) : 0;
+  const expenseTotal = meta.expenseTotal ?? 0;
+  const incomeTotal = meta.incomeTotal ?? 0;
+  const netTotal = meta.netTotal ?? meta.total ?? expenseTotal - incomeTotal;
+  const expenseCount = meta.expenseCount ?? meta.count ?? 0;
 
-  return [
-    kpiRow(KPI.burn, `${formatMoney(meta.total)} 元`),
-    kpiRow(KPI.swipes, `${meta.count} 次`),
-    kpiRow(KPI.dailyBurn, `${formatMoney(dailyAvg)} 元`),
-    kpiRow(KPI.perSwipe, `${formatMoney(perTx)} 元`),
+  const dailyAvg =
+    expenseCount > 0 ? Math.round(expenseTotal / Math.max(dim, 1)) : 0;
+  const perTx =
+    expenseCount > 0 ? Math.round(expenseTotal / expenseCount) : 0;
+
+  const lines = [
+    kpiRow(KPI.burn, `${formatMoney(expenseTotal)} 元`),
   ];
+
+  if (incomeTotal > 0) {
+    lines.push(kpiRow(KPI.income, `+${formatMoney(incomeTotal)} 元`));
+    lines.push(kpiRow(KPI.net, `${formatMoney(netTotal)} 元`));
+  }
+
+  lines.push(
+    kpiRow(KPI.swipes, `${meta.count ?? expenseCount} 次`),
+    kpiRow(KPI.dailyBurn, `${formatMoney(dailyAvg)} 元`),
+    kpiRow(KPI.perSwipe, `${formatMoney(perTx)} 元`)
+  );
+
+  return lines;
 }
 
 function kpiRow(label, value) {
@@ -199,10 +218,12 @@ function kpiRow(label, value) {
  */
 function formatRecordAck(data, viewer) {
   const { emoji } = getCategoryMeta(data.category);
+  const raw = Math.abs(Number(data.amount) || 0);
+  const prefix = data.relation === "income" ? "+" : "";
   const amt =
     data.currency === "TWD"
-      ? `${data.amount} 元`
-      : `${data.amount} ${data.currency}`;
+      ? `${prefix}${raw} 元`
+      : `${prefix}${raw} ${data.currency}`;
   const roleLine = formatTransactionRoles(data, viewer);
   const openers = [
     `記下了 ${emoji} ${data.item} · ${amt}`,

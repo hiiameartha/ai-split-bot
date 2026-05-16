@@ -21,11 +21,8 @@ const {
   colorsForCategories,
 } = require("../utils/chartTheme");
 const { getSignedTransactionAmount } = require("./parseHints");
-const {
-  summarizeByCategory,
-  filterCurrentMonth,
-  calculateTotalExpense,
-} = require("./settlement");
+const { summarizeLedger, aggregateDailyExpense } = require("./ledger");
+const { filterCurrentMonth } = require("./settlement");
 const { parseTransactionDate, formatChartDayLabel } = require("../utils/date");
 const {
   relabelTotalsForViewer,
@@ -135,7 +132,7 @@ function pieDatalabelsPlugin() {
  * @param {object[]} transactions
  */
 async function generateDashboardBarChart(transactions) {
-  const byCategory = summarizeByCategory(transactions);
+  const byCategory = summarizeLedger(transactions).byCategoryExpense;
   let entries = Object.entries(byCategory)
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
@@ -216,7 +213,7 @@ async function generateDashboardBarChart(transactions) {
  * @returns {Promise<string|null>}
  */
 async function generateCategoryPieChart(transactions) {
-  const byCategory = summarizeByCategory(transactions);
+  const byCategory = summarizeLedger(transactions).byCategoryExpense;
   const entries = Object.entries(byCategory)
     .filter(([cat, v]) => v > 0 && cat !== "other")
     .sort((a, b) => b[1] - a[1]);
@@ -499,27 +496,7 @@ function getSharedMembers(tx) {
  * @param {object[]} transactions
  */
 function aggregateDailySpending(transactions) {
-  const daily = {};
-
-  for (const tx of transactions) {
-    const amount = getSignedTransactionAmount(tx);
-    if (amount === 0) continue;
-
-    const label = formatChartDayLabel(tx.date);
-
-    daily[label] = (daily[label] || 0) + amount;
-  }
-
-  const sorted = Object.entries(daily).sort((a, b) => {
-    const pa = a[0].split("/").map(Number);
-    const pb = b[0].split("/").map(Number);
-    return pa[0] - pb[0] || pa[1] - pb[1];
-  });
-
-  return {
-    labels: sorted.map(([l]) => l),
-    values: sorted.map(([, v]) => Math.round(v)),
-  };
+  return aggregateDailyExpense(transactions);
 }
 
 function formatMoney(n) {
@@ -541,9 +518,8 @@ function getCurrentMonthContext(allTransactions) {
  * @param {object} actor
  */
 function getPersonalMonthContext(allTransactions, actor) {
-  const personal = filterTransactionsForViewer(allTransactions, actor);
-  const monthTx = filterCurrentMonth(personal);
-  return buildMonthContext(monthTx, { personalScope: true, actor });
+  const { getPersonalMonthLedger } = require("./ledger");
+  return getPersonalMonthLedger(allTransactions, actor);
 }
 
 /**
@@ -557,14 +533,14 @@ function buildMonthContext(monthTx, extraMeta = {}) {
     extraMeta.personalScope && actor?.displayName
       ? `你的帳本 · ${actor.displayName}`
       : undefined;
+  const ledger = summarizeLedger(monthTx);
 
   return {
     monthTx,
     meta: {
       year: now.getFullYear(),
       month: now.getMonth() + 1,
-      total: calculateTotalExpense(monthTx),
-      count: monthTx.length,
+      ...ledger,
       personalScope: Boolean(extraMeta.personalScope),
       scopeLabel,
     },

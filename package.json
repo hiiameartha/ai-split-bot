@@ -10,7 +10,9 @@
     "test:category": "node scripts/test-category.js",
     "test:chat-image": "node scripts/test-chat-image.js",
     "test:charts": "node scripts/test-charts.js",
-    "test:tags": "node scripts/test-tags.js"
+    "test:tags": "node scripts/test-tags.js",
+    "test:parse-hints": "node scripts/test-parse-hints.js",
+    "test:ledger": "node scripts/test-ledger.js"
   },
   "engines": {
     "node": ">=18"

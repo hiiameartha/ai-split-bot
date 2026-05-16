@@ -25,20 +25,22 @@ const {
 const { classifyIntent, isExplicitFreeContext } = require("./services/intent");
 const { formatTransactionDateTime } = require("./utils/date");
 const { generateFunnyReply, generateDeleteReply } = require("./services/reply");
+const { calculateBalances } = require("./services/settlement");
 const {
-  calculateBalances,
-  summarizeByCategory,
-} = require("./services/settlement");
+  summarizeLedger,
+  getPersonalDebtTransactions,
+  filterDeletableTransactions,
+  summarizeByRecorder,
+  aggregateDailyExpense,
+} = require("./services/ledger");
 const {
   generateDashboardBarChart,
   generateCategoryPieChart,
   generateMonthlyLineChart,
   generateDebtBarChart,
   generateMemberComparisonChart,
-  aggregateDailySpending,
   getCurrentMonthContext,
   getPersonalMonthContext,
-  summarizeByMember,
 } = require("./services/charts");
 const {
   formatDashboardSummary,
@@ -161,7 +163,7 @@ async function handleEvent(event) {
           text: await handleDeletePick(chatId, intent.pickIndex),
         };
       } else if (intent.intent === "delete") {
-        replyPayload = await handleDelete(text, intent.target, chatId);
+        replyPayload = await handleDelete(text, intent.target, chatId, actor);
       } else {
         replyPayload = await handleExpense(text, chatId, actor);
       }
@@ -286,19 +288,25 @@ async function handleExpense(text, chatId, actor) {
  * @param {string|undefined} target
  * @param {string} chatId
  */
-async function handleDelete(text, target, chatId) {
+async function handleDelete(text, target, chatId, actor) {
   console.log("[Flow] 刪除流程, target:", target);
 
   let result;
 
   if (target === "__last__") {
-    result = await deleteLastTransaction(chatId);
+    result = await deleteLastTransaction(chatId, { actor });
   } else {
-    result = await deleteByItemKeyword(target, chatId);
+    result = await deleteByItemKeyword(target, chatId, { actor });
   }
 
   if (result.status === "empty") {
     return { text: "帳本空空的，沒東西可刪 🫥" };
+  }
+
+  if (result.status === "not_owned") {
+    return {
+      text: "只能刪你自己記的帳喔 🙏\n上一筆是別人記的，請對方自己刪或用關鍵字找你的那筆",
+    };
   }
 
   if (result.status === "not_found") {
@@ -383,7 +391,7 @@ async function handleCommand(text, chatId, actor) {
   console.log("[Command]", command);
 
   if (command === "/undo") {
-    const reply = await handleDelete("", "__last__", chatId);
+    const reply = await handleDelete("", "__last__", chatId, actor);
     return reply.text;
   }
 
@@ -392,7 +400,8 @@ async function handleCommand(text, chatId, actor) {
     const reply = await handleDelete(
       text,
       keyword ? keyword : "__last__",
-      chatId
+      chatId,
+      actor
     );
     return reply.text;
   }
@@ -416,8 +425,9 @@ async function handleCommand(text, chatId, actor) {
       return await handleMembersChartCommand(transactions, actor);
 
     case "/debt": {
+      const personalDebtTx = getPersonalDebtTransactions(transactions, actor);
       const balances = relabelTotalsForViewer(
-        calculateBalances(transactions),
+        calculateBalances(personalDebtTx),
         actor,
         transactions
       );
@@ -426,16 +436,13 @@ async function handleCommand(text, chatId, actor) {
 
     case "/summary": {
       const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
-      const byCategory = summarizeByCategory(monthTx);
+      const byCategory = summarizeLedger(monthTx).byCategoryExpense;
       return formatDashboardSummary(monthTx, byCategory, meta);
     }
 
     case "/month": {
       const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
-      return formatMonthlyChartSummary(
-        aggregateDailySpending(monthTx),
-        meta
-      );
+      return formatMonthlyChartSummary(aggregateDailyExpense(monthTx), meta);
     }
 
     case "/help":
@@ -452,7 +459,7 @@ async function handleCommand(text, chatId, actor) {
  */
 async function handleDashboardChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
-  const byCategory = summarizeByCategory(monthTx);
+  const byCategory = summarizeLedger(monthTx).byCategoryExpense;
   let summary = formatDashboardSummary(monthTx, byCategory, meta);
   const imageUrl = await generateDashboardBarChart(monthTx);
 
@@ -469,7 +476,7 @@ async function handleDashboardChartCommand(transactions, actor) {
  */
 async function handleCategoryOnlyChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
-  const byCategory = summarizeByCategory(monthTx);
+  const byCategory = summarizeLedger(monthTx).byCategoryExpense;
   let summary = formatCategoryDeepSummary(monthTx, byCategory, meta);
   const imageUrl = await generateCategoryPieChart(monthTx);
 
@@ -486,7 +493,7 @@ async function handleCategoryOnlyChartCommand(transactions, actor) {
  */
 async function handleMonthlyChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
-  const daily = aggregateDailySpending(monthTx);
+  const daily = aggregateDailyExpense(monthTx);
   let summary = formatMonthlyChartSummary(daily, meta);
   const imageUrl = await generateMonthlyLineChart(monthTx);
 
@@ -502,8 +509,9 @@ async function handleMonthlyChartCommand(transactions, actor) {
  * @param {object[]} transactions
  */
 async function handleDebtChartCommand(transactions, actor) {
+  const personalDebtTx = getPersonalDebtTransactions(transactions, actor);
   const balances = relabelTotalsForViewer(
-    calculateBalances(transactions),
+    calculateBalances(personalDebtTx),
     actor,
     transactions
   );
@@ -524,11 +532,14 @@ async function handleDebtChartCommand(transactions, actor) {
 async function handleMembersChartCommand(transactions, actor) {
   const { monthTx, meta } = getCurrentMonthContext(transactions);
   const byMember = relabelTotalsForViewer(
-    summarizeByMember(monthTx),
+    summarizeByRecorder(monthTx),
     actor,
     transactions
   );
-  let summary = formatMemberChartSummary(byMember, meta);
+  let summary = formatMemberChartSummary(byMember, {
+    ...meta,
+    scopeLabel: "群組 · 每人自己記的支出",
+  });
   const imageUrl = await generateMemberComparisonChart(monthTx, actor);
 
   if (!imageUrl) {

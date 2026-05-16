@@ -465,13 +465,14 @@ async function deleteRowByIndex(rowIndex) {
  * @param {string} chatId
  * @returns {Promise<{ status: 'ok'|'empty', transaction?: object }>}
  */
-async function deleteLastTransaction(chatId) {
+async function deleteLastTransaction(chatId, options = {}) {
   const all = await getTransactions(chatId);
-  if (all.length === 0) {
-    return { status: "empty" };
+  const scoped = scopeTransactionsForDelete(all, options.actor);
+  if (scoped.length === 0) {
+    return { status: all.length === 0 ? "empty" : "not_owned" };
   }
 
-  const target = all[all.length - 1];
+  const target = scoped[scoped.length - 1];
   await deleteRowByIndex(target.rowIndex);
   return { status: "ok", transaction: target };
 }
@@ -483,13 +484,22 @@ async function deleteLastTransaction(chatId) {
  * @param {{ pickIndex?: number }} [options]
  * @returns {Promise<{ status: string, transaction?: object, matches?: object[] }>}
  */
+function scopeTransactionsForDelete(transactions, actor) {
+  if (!actor?.userId) return transactions;
+  const { filterDeletableTransactions } = require("./ledger");
+  return filterDeletableTransactions(transactions, actor);
+}
+
 async function deleteByItemKeyword(keyword, chatId, options = {}) {
   const kw = (keyword || "").trim();
   if (!kw) {
-    return deleteLastTransaction(chatId);
+    return deleteLastTransaction(chatId, options);
   }
 
-  const all = await getTransactions(chatId);
+  const all = scopeTransactionsForDelete(
+    await getTransactions(chatId),
+    options.actor
+  );
   const matches = all
     .filter(
       (tx) =>

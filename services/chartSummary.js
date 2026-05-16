@@ -24,8 +24,9 @@ function actionFooter(lines) {
  * /chart — 財務偷看報告
  */
 function formatDashboardSummary(monthTx, byCategory, meta) {
+  const expenseTotal = meta.expenseTotal ?? meta.total ?? 0;
   const entries = sortEntries(byCategory);
-  if (entries.length === 0) {
+  if (entries.length === 0 && !(meta.incomeTotal > 0)) {
     return `${BRAND}\n  還沒開帳呢\n\n隨便記一筆，你的 Wrapped 就會長出來 ✨`;
   }
 
@@ -34,12 +35,21 @@ function formatDashboardSummary(monthTx, byCategory, meta) {
     ...formatBrandHeader(REPORT.wrapped, meta, pickMoodHook(mood)),
     "",
     ...formatKpiBlock(meta),
-    "",
-    REPORT.category,
   ];
 
-  for (const [cat, amount] of entries.slice(0, 6)) {
-    lines.push(progressLine(cat, amount, meta.total));
+  const incomeEntries = sortEntries(meta.byCategoryIncome || {});
+  if (incomeEntries.length > 0) {
+    lines.push("", "本月收入（入帳）");
+    for (const [cat, amount] of incomeEntries.slice(0, 4)) {
+      lines.push(formatIncomeLine(cat, amount));
+    }
+  }
+
+  if (entries.length > 0) {
+    lines.push("", REPORT.category);
+    for (const [cat, amount] of entries.slice(0, 6)) {
+      lines.push(progressLine(cat, amount, expenseTotal));
+    }
   }
 
   if (mood.otherPct >= 35) {
@@ -84,10 +94,11 @@ function formatCategoryDeepSummary(monthTx, byCategory, meta) {
   }
 
   const mood = analyzeSpendingMood(meta, byCategory, monthTx);
+  const expenseTotal = meta.expenseTotal ?? meta.total ?? 0;
   const otherAmt = byCategory.other || 0;
-  const categorized = meta.total - otherAmt;
+  const categorized = expenseTotal - otherAmt;
   const catPct =
-    meta.total > 0 ? Math.round((categorized / meta.total) * 100) : 0;
+    expenseTotal > 0 ? Math.round((categorized / expenseTotal) * 100) : 0;
 
   const lines = [
     ...formatBrandHeader(REPORT.category, meta, pickMoodHook(mood)),
@@ -155,14 +166,25 @@ function sortEntries(byCategory) {
 }
 
 function topOtherItems(monthTx, limit) {
+  const { isExpenseTransaction, getSignedTransactionAmount } = require("./ledger");
+
   return monthTx
-    .filter((tx) => (tx.category || "other").toLowerCase() === "other")
+    .filter(
+      (tx) =>
+        (tx.category || "other").toLowerCase() === "other" &&
+        isExpenseTransaction(tx)
+    )
     .map((tx) => ({
       item: tx.item || "未命名",
-      amount: tx.twdAmount || tx.amount || 0,
+      amount: getSignedTransactionAmount(tx),
     }))
     .sort((a, b) => b.amount - a.amount)
     .slice(0, limit);
+}
+
+function formatIncomeLine(cat, amount) {
+  const { label, emoji } = getCategoryMeta(cat);
+  return `  ${emoji} ${label}　+${formatMoney(amount)} 元`;
 }
 
 function summarizeTopTags(monthTx, limit) {

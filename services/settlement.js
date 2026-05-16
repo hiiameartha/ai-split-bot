@@ -181,12 +181,8 @@ function filterCurrentMonth(transactions) {
  * @returns {Record<string, number>}
  */
 function summarizeByCategory(transactions) {
-  const summary = {};
-  for (const tx of transactions) {
-    const cat = (tx.category || "other").toLowerCase();
-    summary[cat] = (summary[cat] || 0) + getSignedTransactionAmount(tx);
-  }
-  return summary;
+  const { summarizeLedger } = require("./ledger");
+  return summarizeLedger(transactions).byCategoryExpense;
 }
 
 module.exports = {

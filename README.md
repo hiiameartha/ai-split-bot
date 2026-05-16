@@ -34,6 +34,8 @@ flowchart TB
     Router[事件路由]
     Intent[意圖分流 intent.js]
     AI[記帳解析 ai.js]
+    Hints[後處理 parseHints.js]
+    Ledger[帳務口徑 ledger.js]
     Img[截圖解析 chatImage.js]
     Actor[角色 scope actor.js]
     FX[匯率 exchange.js]
@@ -57,9 +59,13 @@ flowchart TB
   Router --> Intent
   Router --> Img
   Intent --> AI
+  AI --> Hints
+  Hints --> Ledger
   AI --> Actor
   AI --> FX
   Actor --> Sheet
+  Ledger --> Chart
+  Ledger --> Settle
   Img --> Actor
   Router --> Settle
   Router --> Chart
@@ -98,8 +104,9 @@ flowchart TB
    - **圖片** → 下載 → Vision 解析截圖 → 暫存 `pendingImports`（5 分鐘）→ 回分析文字，等使用者回「匯入」。
    - **文字且以 `/` 開頭** → `handleCommand`（指令表）。
    - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 匯入確認 / 刪除編號。
-4. 記帳：`parseExpense` → 匯率 `convertToTWD` → `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`（可附 Giphy 靜態圖）。
-5. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）。
+4. 記帳：`parseExpense`（AI）→ `applyParseHints`（算式、關係、收入／請客校正）→ 匯率 `convertToTWD` → `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`（可附 Giphy 靜態圖）。
+5. 報表／圖表：一律經 `ledger.summarizeLedger` 加總（支出、收入、淨額分開）。
+6. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）。
 
 ```text
 文字訊息
@@ -111,6 +118,14 @@ flowchart TB
                       ├─ delete_pick ─────► 多筆刪除選編號
                       ├─ delete ──────────► 刪除上一筆 / 關鍵字
                       └─ record ──────────► handleExpense（AI 記帳）
+```
+
+```text
+記帳資料流（維護時請沿此單一路徑擴充）
+  原文 → ai.parseExpense
+      → parseHints.applyParseHints   # 算式、paid_for_me / income / treat
+      → googleSheet.appendTransaction（含 recordedBy）
+      → ledger.summarizeLedger       # 所有 /chart、/summary KPI
 ```
 
 **記憶體暫存（重啟會消失）**
@@ -143,26 +158,56 @@ flowchart TB
 - 回覆給查看者時會改標籤：自己 →「我」；他人的關係人 →「男友（阿明）」。
 - 每筆記錄 `recordedBy` / `recordedByName`（誰在 LINE 上按的）。
 
-### 個人 vs 全帳本報表
+### 個人 vs 群組報表
+
+同一 `chatId`（群組／一對一）內，**每人只會看到自己記的帳** 組成個人報表；不會把別人 `recordedBy` 的列算進你的 `/chart`。
 
 | 功能 | 資料範圍 |
 |------|----------|
-| `/chart`、`/category`、`/monthly`、`/summary`、`/month` | **個人 scope**：只含該使用者 `recordedBy` 記下的列（同 `chatId`） |
-| `/debt`、`/debtchart` | **整個 chatId** 所有交易 |
-| `/members` | **整個 chatId** 當月（看誰花最多） |
+| `/chart`、`/category`、`/monthly`、`/summary`、`/month` | **個人**：`filterTransactionsForViewer`（`recordedBy === 你的 userId`） |
+| `/debt`、`/debtchart` | **個人代墊**：僅含**你自己記的** `paid_for_me` / `i_paid` / `shared` 列 |
+| `/members` | **群組**：當月每人「自己記帳」的支出加總（戰力榜，非偷看他人私帳） |
+| 刪除／`/undo` | **個人**：只能刪 `recordedBy` 為自己的列 |
+
+> 舊資料若缺少 `recordedBy`，會退回比對 payer／consumer 顯示名稱，隔離較不完整；新記帳皆會寫入 `recordedBy`。
+
+### 帳務口徑（`ledger.js`）
+
+所有報表 KPI、分類加總應經 `summarizeLedger()`，避免各處重複計算：
+
+| 欄位 | 說明 |
+|------|------|
+| `expenseTotal` | 支出合計（正數） |
+| `incomeTotal` | 收入合計（正數，如薪水、入帳） |
+| `netTotal` | 淨額 = 支出 − 收入 |
+| `byCategoryExpense` | 圓餅／排行榜（僅支出） |
+| `byCategoryIncome` | 報告「本月收入」區塊 |
 
 ### 交易關係 `relation`
 
-| 值 | 語意 | 分帳效果 |
-|----|------|----------|
-| `self` | 自己付自己用 | 不產生欠款 |
-| `paid_for_me` | 別人幫我付 | consumer 欠 payer |
-| `i_paid` | 我幫別人付 | consumer 欠 payer |
-| `shared` | 多人分攤 | 參與者均分，payer 代墊全額 |
+| 值 | 語意 | 分帳 | 報表 |
+|----|------|------|------|
+| `self` | 自己付自己用 | 不產生欠款 | 計入支出 |
+| `paid_for_me` | 別人代墊（要還） | consumer 欠 payer | 計入支出 |
+| `i_paid` | 我幫別人付 | consumer 欠 payer | 計入支出 |
+| `shared` | 多人分攤 | 參與者均分，payer 代墊 | 計入支出 |
+| `income` | 收入／入帳（薪水、紅包、塞進錢包） | 不產生欠款 | **收入 +**（拉低淨支出） |
+| `treat` | 請客／招待（不用付） | 不產生欠款 | **實付 0**，`item` 可附「價值 N，誰請客」 |
 
 `/debt` 的餘額：**正數** = 別人欠你；**負數** = 你欠別人。顯示時會用 `simplifyDebts` 化簡成「誰還給誰」。
 
 金額以 **台幣 `twdAmount`** 計算分帳（記帳當下依 ExchangeRate-API 換算）。
+
+### 記帳後處理（`parseHints.js`）
+
+AI 解析後會再校正，減少主受詞顛倒、算式算錯：
+
+| 情境 | 處理 |
+|------|------|
+| `3000+5000-80`、`30x10` | 本地安全計算金額 |
+| `被女朋友包養`、`不用付錢` | → `treat`（0 元 + 價值備註，不算債） |
+| `男友幫我付` | → `paid_for_me`（代墊，要還） |
+| `阿嬤塞進錢包` | → `income`（收入顯示為正） |
 
 ### 分類與標籤
 
@@ -178,7 +223,7 @@ flowchart TB
 - `匯入` → 確認截圖匯入
 - 含「刪掉、不要這筆」等模糊語 → AI 分類
 
-金額 ≤ 0 預設拒絕寫入；訊息含「免費、請客、0元」等則允許（`isExplicitFreeContext`）。
+金額 ≤ 0 預設拒絕寫入；`income`、`treat` 或訊息含「免費、不用付錢、請客」等則允許（`isExplicitFreeContext`）。
 
 ---
 
@@ -193,11 +238,13 @@ ai-split-bot/
 │   └── credentials.json.example   # Google Service Account（勿 commit 真檔）
 ├── services/
 │   ├── ai.js                   # 自然語言記帳 → JSON
+│   ├── parseHints.js           # 算式金額、relation 校正、income / treat
+│   ├── ledger.js               # 帳務口徑（支出／收入／淨額、個人帳本）
 │   ├── intent.js               # 刪除 / 匯入 / 記帳意圖
 │   ├── actor.js                # 我 / 關係人 scope、個人篩選、顯示標籤
 │   ├── googleSheet.js          # Sheet CRUD、欄位初始化
 │   ├── exchange.js             # 多幣別 → TWD
-│   ├── settlement.js           # 欠款餘額、分類加總、化簡還款邊
+│   ├── settlement.js           # 欠款餘額、化簡還款邊
 │   ├── charts.js               # QuickChart URL、本月上下文
 │   ├── chartSummary.js         # 圖表配套文案（產品語氣）
 │   ├── chatImage.js            # LINE 圖片下載 + Vision 截圖 OCR
@@ -238,7 +285,7 @@ ai-split-bot/
 | `amount` | 原幣金額 |
 | `currency` | TWD / MYR / USD / JPY / KRW |
 | `twdAmount` | 換算台幣 |
-| `relation` | self / paid_for_me / i_paid / shared |
+| `relation` | self / paid_for_me / i_paid / shared / income / treat |
 | `category` | 英文分類 |
 | `tags` | 標籤（序列化儲存） |
 | `rawText` | 使用者原文 |
@@ -267,9 +314,12 @@ ai-split-bot/
 | 使用者輸入 | 典型 relation |
 |------------|----------------|
 | 我買了 80 元便當 | `self` |
-| 男友幫我付 25 馬幣火鍋 | `paid_for_me` |
+| 男友幫我付 25 馬幣火鍋 | `paid_for_me`（代墊要還） |
 | 我幫小胖付了 500 台幣 | `i_paid` |
 | 我跟男友一起吃 1200 日幣拉麵 | `shared` |
+| 薪水 50000、阿嬤塞 3000 進錢包 | `income` |
+| 被請吃 buffet 不用付，價值 30 萬 | `treat`（0 元，備註價值，不算債） |
+| 花了 3000+5000-80 的錢 | `self`（金額 7920，由算式計算） |
 
 ---
 
@@ -280,23 +330,23 @@ ai-split-bot/
 | 指令 | 說明 |
 |------|------|
 | `/help` | 使用說明 |
-| `/debt` | 代墊結算文字（全帳本） |
-| `/summary` | 個人本月支出文案速覽 |
+| `/debt` | **你的**代墊結算文字 |
+| `/summary` | 個人本月報告（支出／收入／淨額 KPI） |
 | `/month` | 個人本月簡短摘要 |
 | `/chart` | 個人 Dashboard 橫條圖 + KPI 文案 |
 | `/category` | 個人已分類圓餅圖（排除 `other` 主導的灰牆） |
-| `/monthly` | 個人每日支出折線圖 |
-| `/debtchart` | 欠款長條圖 |
-| `/members` | 成員消費排行（全帳本當月） |
-| `/undo` | 刪除最後一筆 |
-| `/delete [關鍵字]` | 刪除符合項目；無關鍵字則刪最後一筆 |
+| `/monthly` | 個人每日**支出**折線圖 |
+| `/debtchart` | **你的**代墊長條圖 |
+| `/members` | 群組戰力榜（每人自己記的支出） |
+| `/undo` | 刪除**你自己**最後一筆 |
+| `/delete [關鍵字]` | 刪除**你自己**符合的項目 |
 
 圖表指令回傳 **文字 + 圖片**；若 QuickChart URL 過長或失敗，僅回文字並註明略過圖表。
 
 ### 自然語言（非 `/`）
 
-- **記帳**：直接描述消費。
-- **刪除**：`刪除上一筆`、`刪除 火鍋`、`刪除 2`（多筆時）。
+- **記帳**：直接描述消費、收入（例：薪水 50000）、請客（例：被請吃不用付）。
+- **刪除**：`刪除上一筆`、`刪除 火鍋`、`刪除 2`（多筆時）；無法刪除他人記的列。
 - **截圖匯入**：傳圖片 → 回覆分析 → 回「匯入」寫入。
 
 ### 聊天截圖匯入
@@ -418,7 +468,20 @@ npm run test:chat-image  # 截圖規則（需圖檔時見腳本說明）
 npm run test:tags
 ```
 
-另有 `scripts/test-settlement.js`、`test-actor.js`、`test-date.js` 可直接 `node scripts/...` 執行。
+另有下列腳本可直接執行：
+
+```bash
+node scripts/test-settlement.js   # 分帳餘額
+node scripts/test-actor.js        # 個人篩選、scope 標籤
+node scripts/test-parse-hints.js  # 算式、income、treat、代付方向
+node scripts/test-ledger.js       # 帳務口徑、個人代墊隔離
+node scripts/test-date.js
+```
+
+### 已知限制（後續可改）
+
+- **`sharedWith` 尚未寫入 Sheet**：多人 `shared` 重讀後可能只剩 payer／consumer 兩人分攤。
+- **舊列無 `recordedBy`**：個人報表隔離依賴暱稱 fallback，建議補欄或遷移。
 
 ---
 
