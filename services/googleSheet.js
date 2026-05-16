@@ -44,10 +44,31 @@ let resolvedSheetTitle = SHEET_NAME;
 /** @type {number|null} */
 let resolvedSheetId = null;
 
-async function getSheetsClient() {
-  if (sheetsClient) return sheetsClient;
+/** 修正 Render / 環境變數常見的 PEM 換行問題 */
+function normalizeGoogleCredentials(credentials) {
+  const creds = { ...credentials };
+  if (typeof creds.private_key === "string") {
+    creds.private_key = creds.private_key.replace(/\\n/g, "\n").trim();
+  }
+  return creds;
+}
 
+function loadGoogleCredentials() {
   const fs = require("fs");
+
+  const jsonRaw =
+    process.env.GOOGLE_CREDENTIALS_JSON ||
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (jsonRaw) {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonRaw);
+    } catch (e) {
+      throw new Error(`GOOGLE_CREDENTIALS_JSON 不是合法 JSON：${e.message}`);
+    }
+    return normalizeGoogleCredentials(parsed);
+  }
+
   const candidates = [
     process.env.GOOGLE_CREDENTIALS_PATH,
     path.join(__dirname, "..", "credentials", "credentials.json"),
@@ -57,12 +78,26 @@ async function getSheetsClient() {
   const credentialsPath = candidates.find((p) => fs.existsSync(p));
   if (!credentialsPath) {
     throw new Error(
-      "找不到 Google 憑證檔，請放置於 credentials/credentials.json 或專案根目錄 credentials.json"
+      "找不到 Google 憑證：設定 GOOGLE_CREDENTIALS_JSON，或放置 credentials/credentials.json"
     );
   }
 
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+  } catch (e) {
+    throw new Error(`無法讀取憑證檔 ${credentialsPath}：${e.message}`);
+  }
+  return normalizeGoogleCredentials(parsed);
+}
+
+async function getSheetsClient() {
+  if (sheetsClient) return sheetsClient;
+
+  const credentials = loadGoogleCredentials();
+
   const auth = new google.auth.GoogleAuth({
-    keyFile: credentialsPath,
+    credentials,
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 
