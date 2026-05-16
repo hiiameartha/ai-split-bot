@@ -1,0 +1,459 @@
+/**
+ * MoodPay - Google Sheets 儲存服務
+ * 讀寫記帳交易紀錄
+ */
+
+const crypto = require("crypto");
+const path = require("path");
+const { google } = require("googleapis");
+const {
+  serializeTags,
+  parseTags,
+  normalizeCategory,
+  inferCategoryFromItem,
+  CATEGORIES,
+} = require("./category");
+const { formatDateYYYYMMDD } = require("../utils/date");
+
+/** Sheet 欄位標題（第一列） */
+const HEADERS = [
+  "date",
+  "payer",
+  "consumer",
+  "item",
+  "amount",
+  "currency",
+  "twdAmount",
+  "relation",
+  "category",
+  "tags",
+  "rawText",
+  "id",
+];
+
+const SHEET_NAME = "Transactions";
+const COL_COUNT = HEADERS.length;
+
+let sheetsClient = null;
+let ensureReadyPromise = null;
+let resolvedSheetTitle = SHEET_NAME;
+/** @type {number|null} */
+let resolvedSheetId = null;
+
+async function getSheetsClient() {
+  if (sheetsClient) return sheetsClient;
+
+  const fs = require("fs");
+  const candidates = [
+    process.env.GOOGLE_CREDENTIALS_PATH,
+    path.join(__dirname, "..", "credentials", "credentials.json"),
+    path.join(__dirname, "..", "credentials.json"),
+  ].filter(Boolean);
+
+  const credentialsPath = candidates.find((p) => fs.existsSync(p));
+  if (!credentialsPath) {
+    throw new Error(
+      "找不到 Google 憑證檔，請放置於 credentials/credentials.json 或專案根目錄 credentials.json"
+    );
+  }
+
+  const auth = new google.auth.GoogleAuth({
+    keyFile: credentialsPath,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  const authClient = await auth.getClient();
+  sheetsClient = google.sheets({ version: "v4", auth: authClient });
+  return sheetsClient;
+}
+
+function getSpreadsheetId() {
+  const id = process.env.GOOGLE_SHEET_ID;
+  if (!id) {
+    throw new Error("缺少環境變數 GOOGLE_SHEET_ID");
+  }
+  return id;
+}
+
+function findSheetByName(sheetList, name) {
+  const target = name.trim().toLowerCase();
+  return sheetList?.find(
+    (s) => (s.properties?.title || "").trim().toLowerCase() === target
+  );
+}
+
+async function ensureSheetReady() {
+  if (ensureReadyPromise) {
+    return ensureReadyPromise;
+  }
+
+  ensureReadyPromise = doEnsureSheetReady().catch((err) => {
+    ensureReadyPromise = null;
+    throw err;
+  });
+
+  return ensureReadyPromise;
+}
+
+async function doEnsureSheetReady() {
+  const sheets = await getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheetList = meta.data.sheets || [];
+  let sheet = findSheetByName(sheetList, SHEET_NAME);
+
+  if (!sheet) {
+    console.log(`[GoogleSheet] 建立工作表: ${SHEET_NAME}`);
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: { title: SHEET_NAME },
+              },
+            },
+          ],
+        },
+      });
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (!msg.includes("already exists")) {
+        throw err;
+      }
+    }
+
+    const metaAgain = await sheets.spreadsheets.get({ spreadsheetId });
+    sheet = findSheetByName(metaAgain.data.sheets || [], SHEET_NAME);
+  }
+
+  resolvedSheetTitle = sheet?.properties?.title || SHEET_NAME;
+  resolvedSheetId = sheet?.properties?.sheetId ?? null;
+
+  const headerRange = `${resolvedSheetTitle}!A1:${columnLetter(COL_COUNT)}1`;
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: headerRange,
+  });
+
+  const firstRow = headerRes.data.values?.[0] || [];
+  await syncHeaders(sheets, spreadsheetId, firstRow);
+}
+
+/**
+ * 1-based 欄位字母（1=A）
+ * @param {number} col
+ */
+function columnLetter(col) {
+  let s = "";
+  let n = col;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/**
+ * 同步標題列（補 tags、id 等欄）
+ */
+async function syncHeaders(sheets, spreadsheetId, firstRow) {
+  if (firstRow.length === 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${resolvedSheetTitle}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [HEADERS] },
+    });
+    return;
+  }
+
+  const hasTags = firstRow.includes("tags");
+  const hasId = firstRow.includes("id");
+  const legacyDateHeader = firstRow[0] === "日期";
+
+  if (!hasTags || !hasId || legacyDateHeader || firstRow.length < HEADERS.length) {
+    console.log("[GoogleSheet] 更新標題列為新版欄位");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${resolvedSheetTitle}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [HEADERS] },
+    });
+  }
+}
+
+/**
+ * @param {string[][]} rows
+ * @returns {object[]}
+ */
+function mapRowsToTransactions(rows) {
+  return rows.map((row, i) => mapRowToTransaction(row, i + 2));
+}
+
+/**
+ * 相容舊版 10/11 欄與新版 12 欄
+ * @param {string[]} row
+ * @param {number} rowIndex
+ */
+function mapRowToTransaction(row, rowIndex) {
+  const len = row.length;
+  let category = "other";
+  let tags = [];
+  let rawText = "";
+  let id = "";
+
+  if (len >= 12) {
+    category = row[8] || "other";
+    tags = parseTags(row[9]);
+    rawText = row[10] || "";
+    id = row[11] || "";
+  } else if (len === 11) {
+    category = row[8] || "other";
+    if (row[9] && row[9].includes(",") && !row[10]) {
+      tags = parseTags(row[9]);
+      rawText = "";
+      id = row[10] || "";
+    } else {
+      rawText = row[9] || "";
+      id = row[10] || "";
+    }
+  } else if (len >= 10) {
+    category = row[8] || "other";
+    rawText = row[9] || "";
+  }
+
+  const item = row[3] || "";
+  const normalized = normalizeCategory(category);
+  category = normalized || inferCategoryFromItem(item, rawText, tags) || "other";
+  if (!CATEGORIES.includes(category)) {
+    category = "other";
+  }
+
+  return {
+    rowIndex,
+    id,
+    date: row[0] || "",
+    payer: row[1] || "",
+    consumer: row[2] || "",
+    item,
+    amount: parseFloat(row[4]) || 0,
+    currency: row[5] || "TWD",
+    twdAmount: parseFloat(row[6]) || 0,
+    relation: row[7] || "self",
+    category,
+    tags,
+    rawText,
+  };
+}
+
+async function fetchRawRows() {
+  await ensureSheetReady();
+  const sheets = await getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${resolvedSheetTitle}!A2:${columnLetter(COL_COUNT)}`,
+  });
+
+  return res.data.values || [];
+}
+
+/**
+ * 讀取所有交易紀錄
+ * @returns {Promise<object[]>}
+ */
+async function getAllTransactions() {
+  const rows = await fetchRawRows();
+  console.log(`[GoogleSheet] 讀取 ${rows.length} 筆交易`);
+  return mapRowsToTransactions(rows);
+}
+
+/**
+ * 最近 N 筆（由新到舊）
+ * @param {number} n
+ */
+async function getRecentTransactions(n = 5) {
+  const all = await getAllTransactions();
+  return all.slice(-n).reverse();
+}
+
+/**
+ * 新增一筆交易紀錄
+ * @param {object} data
+ * @returns {Promise<object>} 含 id 的完整資料
+ */
+async function appendTransaction(data) {
+  await ensureSheetReady();
+
+  const sheets = await getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+  const id = data.id || crypto.randomUUID();
+
+  const row = [
+    data.date || formatDateYYYYMMDD(),
+    data.payer || "",
+    data.consumer || "",
+    data.item || "",
+    data.amount ?? "",
+    data.currency || "",
+    data.twdAmount ?? "",
+    data.relation || "",
+    data.category || "other",
+    serializeTags(data.tags),
+    data.rawText || "",
+    id,
+  ];
+
+  console.log("[GoogleSheet] 新增交易:", row);
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${resolvedSheetTitle}!A:${columnLetter(COL_COUNT)}`,
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [row] },
+  });
+
+  console.log("[GoogleSheet] 寫入成功");
+  return { ...data, id };
+}
+
+/**
+ * 刪除指定列
+ * @param {number} rowIndex - 工作表列號（1-based，含標題）
+ */
+async function deleteRowByIndex(rowIndex) {
+  if (resolvedSheetId == null) {
+    await ensureSheetReady();
+  }
+  if (resolvedSheetId == null) {
+    throw new Error("無法取得工作表 ID");
+  }
+
+  const sheets = await getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId: resolvedSheetId,
+              dimension: "ROWS",
+              startIndex: rowIndex - 1,
+              endIndex: rowIndex,
+            },
+          },
+        },
+      ],
+    },
+  });
+
+  console.log(`[GoogleSheet] 已刪除第 ${rowIndex} 列`);
+}
+
+/**
+ * 刪除最後一筆交易
+ * @returns {Promise<{ status: 'ok'|'empty', transaction?: object }>}
+ */
+async function deleteLastTransaction() {
+  const all = await getAllTransactions();
+  if (all.length === 0) {
+    return { status: "empty" };
+  }
+
+  const target = all[all.length - 1];
+  await deleteRowByIndex(target.rowIndex);
+  return { status: "ok", transaction: target };
+}
+
+/**
+ * 依項目關鍵字刪除（預設：多筆時只刪最新一筆匹配）
+ * @param {string} keyword
+ * @param {{ pickIndex?: number }} [options]
+ * @returns {Promise<{ status: string, transaction?: object, matches?: object[] }>}
+ */
+async function deleteByItemKeyword(keyword, options = {}) {
+  const kw = (keyword || "").trim();
+  if (!kw) {
+    return deleteLastTransaction();
+  }
+
+  const all = await getAllTransactions();
+  const matches = all
+    .filter(
+      (tx) =>
+        (tx.item && tx.item.includes(kw)) ||
+        (tx.rawText && tx.rawText.includes(kw))
+    )
+    .reverse();
+
+  if (matches.length === 0) {
+    return { status: "not_found", keyword: kw };
+  }
+
+  if (matches.length > 1 && options.pickIndex == null) {
+    return {
+      status: "multiple",
+      keyword: kw,
+      matches: matches.slice(0, 5).map((tx, i) => ({
+        index: i + 1,
+        rowIndex: tx.rowIndex,
+        item: tx.item,
+        amount: tx.amount,
+        currency: tx.currency,
+        date: tx.date,
+      })),
+    };
+  }
+
+  const pick =
+    options.pickIndex != null
+      ? matches[options.pickIndex - 1]
+      : matches[0];
+
+  if (!pick) {
+    return { status: "not_found", keyword: kw };
+  }
+
+  await deleteRowByIndex(pick.rowIndex);
+  return { status: "ok", transaction: pick };
+}
+
+/**
+ * 依暫存序號刪除（多筆匹配後使用者選擇）
+ * @param {object[]} matches
+ * @param {number} pickIndex - 1-based
+ */
+async function deleteByPickIndex(matches, pickIndex) {
+  const entry = matches.find((m) => m.index === pickIndex);
+  if (!entry) {
+    return { status: "invalid_pick" };
+  }
+
+  const all = await getAllTransactions();
+  const tx = all.find((t) => t.rowIndex === entry.rowIndex);
+  if (!tx) {
+    return { status: "not_found" };
+  }
+
+  await deleteRowByIndex(tx.rowIndex);
+  return { status: "ok", transaction: tx };
+}
+
+module.exports = {
+  appendTransaction,
+  getAllTransactions,
+  getRecentTransactions,
+  deleteLastTransaction,
+  deleteByItemKeyword,
+  deleteByPickIndex,
+  HEADERS,
+};
