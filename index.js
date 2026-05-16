@@ -36,6 +36,7 @@ const {
   generateDebtBarChart,
   generateMemberComparisonChart,
   aggregateDailySpending,
+  getCurrentMonthContext,
   getPersonalMonthContext,
   summarizeByMember,
 } = require("./services/charts");
