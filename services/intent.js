@@ -131,7 +131,9 @@ delete 時 target 為要刪的項目關鍵字；若刪上一筆則 target 為 "_
  */
 function isExplicitFreeContext(text, parsed) {
   const combined = `${text} ${parsed?.item || ""} ${parsed?.rawText || ""}`;
-  return /免費|免钱|零元|0元|不用錢|請客|招待|free|complimentary/i.test(combined);
+  return /免費|免钱|零元|0元|不用錢|不用付錢|不用付|沒付|免付|請客|招待|free|complimentary/i.test(
+    combined
+  );
 }
 
 module.exports = {

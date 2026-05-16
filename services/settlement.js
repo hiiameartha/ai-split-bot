@@ -4,6 +4,7 @@
  */
 
 const { parseTransactionDate, isSameMonthInAppTz } = require("../utils/date");
+const { getSignedTransactionAmount } = require("./parseHints");
 
 /**
  * 計算各人淨餘額
@@ -26,7 +27,7 @@ function calculateBalances(transactions) {
   };
 
   for (const tx of transactions) {
-    const amount = tx.twdAmount || tx.amount || 0;
+    const amount = Math.abs(tx.twdAmount || tx.amount || 0);
     if (amount <= 0) continue;
 
     const payer = tx.payer || "我";
@@ -38,6 +39,14 @@ function calculateBalances(transactions) {
     );
 
     switch (relation) {
+      case "income":
+        // 收到贈與／入帳，不產生分帳欠款
+        break;
+
+      case "treat":
+        // 請客／招待：記備註，不算代墊欠款
+        break;
+
       case "self":
         // 自己付自己用，不產生欠款
         break;
@@ -146,7 +155,10 @@ function getSharedParticipants(tx) {
  * @returns {number}
  */
 function calculateTotalExpense(transactions) {
-  return transactions.reduce((sum, tx) => sum + (tx.twdAmount || tx.amount || 0), 0);
+  return transactions.reduce(
+    (sum, tx) => sum + getSignedTransactionAmount(tx),
+    0
+  );
 }
 
 /**
@@ -172,7 +184,7 @@ function summarizeByCategory(transactions) {
   const summary = {};
   for (const tx of transactions) {
     const cat = (tx.category || "other").toLowerCase();
-    summary[cat] = (summary[cat] || 0) + (tx.twdAmount || tx.amount || 0);
+    summary[cat] = (summary[cat] || 0) + getSignedTransactionAmount(tx);
   }
   return summary;
 }

@@ -119,6 +119,8 @@ async function generateAiMemeLine(data, mode) {
 
 function buildReplyToneHint(data, mode) {
   if (mode === "delete") return "語氣：輕鬆、安慰錢包。";
+  if (data.relation === "income") return "語氣：開心收到錢、紅包、入帳，勿寫成轉帳消失或剁手。";
+  if (data.relation === "treat") return "語氣：被請客、不用付錢，輕鬆感謝，勿寫成欠錢或剁手。";
   const cat = (data.category || "other").toLowerCase();
   const amt = Number(data.twdAmount || data.amount) || 0;
   if (cat === "drink") return "語氣：吐槽手搖/珍奶。";

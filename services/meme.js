@@ -5,8 +5,24 @@
 
 const axios = require("axios");
 
-/** @type {{ test: (item: string, amount: number, text?: string) => boolean, lines: string[] }[]} */
+/** @type {{ test: (item: string, amount: number, text?: string, data?: object) => boolean, lines: string[] }[]} */
 const RULES = [
+  {
+    test: (_item, _amount, _text, data) => data?.relation === "income",
+    lines: [
+      "錢包突然變胖，是阿嬤的魔法嗎？✨",
+      "入帳成功，今天可以多吃一口 🧧",
+      "這筆是收入，不是剁手，放心 😌",
+    ],
+  },
+  {
+    test: (_item, _amount, _text, data) => data?.relation === "treat",
+    lines: [
+      "有人請客，這筆不算債，放心吃 🍽️",
+      "0 元實付，但人生價值可能很貴（備註裡）",
+      "請客愉快，分帳機器人先退場 😌",
+    ],
+  },
   {
     test: (item, amount) =>
       /豆花|豆漿/i.test(item) ||
@@ -64,7 +80,7 @@ function pickRuleMeme(data) {
   const text = data.rawText || "";
 
   for (const rule of RULES) {
-    if (rule.test(item, amount, text)) {
+    if (rule.test(item, amount, text, data)) {
       return rule.lines[Math.floor(Math.random() * rule.lines.length)];
     }
   }

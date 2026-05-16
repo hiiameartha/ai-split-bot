@@ -574,6 +574,7 @@ const RELATION_TAGS = {
   shared: "分攤",
   paid_for_me: "代墊",
   i_paid: "代付",
+  treat: "請客",
 };
 
 /**

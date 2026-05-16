@@ -9,6 +9,7 @@ const {
   resolveTags,
   resolveCategoryHint,
 } = require("./category");
+const { applyParseHints, RELATIONS } = require("./parseHints");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -16,7 +17,6 @@ const openai = new OpenAI({
 
 const MODEL = "gpt-4o-mini";
 const SUPPORTED_CURRENCIES = ["TWD", "MYR", "USD", "JPY", "KRW"];
-const RELATIONS = ["self", "paid_for_me", "i_paid", "shared"];
 
 const CATEGORY_LIST = CATEGORIES.join(", ");
 
@@ -28,7 +28,7 @@ const SYSTEM_PROMPT = `你是 MoodPay 記帳助手，解析繁體中文記帳訊
   "item": "消費項目名稱（簡短，如：娘惹博物館、海底撈）",
   "amount": 數字,
   "currency": "TWD|MYR|USD|JPY|KRW",
-  "relation": "self|paid_for_me|i_paid|shared",
+  "relation": "self|paid_for_me|i_paid|shared|income|treat",
   "category": "必填英文，見清單",
   "tags": ["必填，3~6 個繁體中文語意標籤"],
   "sharedWith": ["僅 shared 時填寫"]
@@ -74,7 +74,25 @@ category 對照（務必選最貼近的一項，避免 other）：
 - transfer：轉帳
 - other：僅在以上皆不符合時使用
 
-relation：self / paid_for_me / i_paid / shared
+relation：self / paid_for_me / i_paid / shared / income / treat
+
+relation 規則（非常重要）：
+- self：我付、我自己花
+- paid_for_me：別人代墊、幫我付（之後可能要還；payer=墊款人, consumer=我）
+- i_paid：我幫別人付（payer=我, consumer=對方）
+- shared：多人分攤
+- income：收到錢、塞進錢包、紅包入帳（payer=給錢的人, consumer=我）
+- treat：請客／招待／包養／不用付錢（不算債；amount 填 0，參考價值寫在 item 備註如「buffet（價值30萬，女朋友請客）」）
+
+relation 範例：
+- 「男友幫我付 25 馬幣火鍋」→ paid_for_me（代墊要還）
+- 「我幫小胖付了 500」→ i_paid
+- 「被女朋友包養吃 buffet 不用付錢，價值30萬」→ treat, amount:0, payer:女朋友, item 含價值備註
+- 「我阿嬤塞了 300 進錢包」→ income
+
+金額算式：
+- 原文若有 3000+5000-80、30x10 等算式，amount 必須先算出正確總和（7920、300），勿漏減項
+- treat 時 amount 必為 0，勿把「價值」當實付金額
 
 規則：
 1. 「我」保留為「我」
@@ -117,7 +135,7 @@ async function parseExpense(text) {
 
 function normalizeParsedExpense(parsed, rawText) {
   const currency = normalizeCurrency(parsed.currency);
-  const relation = RELATIONS.includes(parsed.relation)
+  let relation = RELATIONS.includes(parsed.relation)
     ? parsed.relation
     : "self";
 
@@ -151,7 +169,7 @@ function normalizeParsedExpense(parsed, rawText) {
     categoryHint
   );
 
-  return {
+  const base = {
     payer: String(parsed.payer || "我"),
     consumer: String(parsed.consumer || "我"),
     item,
@@ -163,6 +181,8 @@ function normalizeParsedExpense(parsed, rawText) {
     sharedWith,
     rawText,
   };
+
+  return applyParseHints(base, rawText);
 }
 
 function normalizeCurrency(currency) {

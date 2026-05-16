@@ -172,6 +172,14 @@ function formatTransactionRoles(tx, viewer) {
   const relation = tx.relation || "self";
 
   switch (relation) {
+    case "income":
+      return consumer === payer
+        ? `${payer} 入帳`
+        : `${payer} 給 ${consumer}`;
+    case "treat":
+      return payer === consumer
+        ? `${payer} 請客`
+        : `${payer} 請 ${consumer}`;
     case "paid_for_me":
       return `${payer} 幫 ${consumer} 付`;
     case "i_paid":

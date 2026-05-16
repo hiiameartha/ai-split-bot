@@ -244,7 +244,12 @@ async function handleExpense(text, chatId, actor) {
 
   const parsed = await parseExpense(text);
 
-  if (parsed.amount <= 0 && !isExplicitFreeContext(text, parsed)) {
+  if (
+    parsed.amount <= 0 &&
+    parsed.relation !== "income" &&
+    parsed.relation !== "treat" &&
+    !isExplicitFreeContext(text, parsed)
+  ) {
     console.log("[Flow] 金額<=0，拒絕寫入");
     return { text: formatZeroAmountWarning() };
   }

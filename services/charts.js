@@ -20,6 +20,7 @@ const {
   getCategoryColor,
   colorsForCategories,
 } = require("../utils/chartTheme");
+const { getSignedTransactionAmount } = require("./parseHints");
 const {
   summarizeByCategory,
   filterCurrentMonth,
@@ -460,8 +461,8 @@ function summarizeByMember(transactions) {
   const totals = {};
 
   for (const tx of transactions) {
-    const amount = tx.twdAmount || tx.amount || 0;
-    if (amount <= 0) continue;
+    const amount = getSignedTransactionAmount(tx);
+    if (amount === 0) continue;
 
     const relation = tx.relation || "self";
 
@@ -501,8 +502,8 @@ function aggregateDailySpending(transactions) {
   const daily = {};
 
   for (const tx of transactions) {
-    const amount = tx.twdAmount || tx.amount || 0;
-    if (amount <= 0) continue;
+    const amount = getSignedTransactionAmount(tx);
+    if (amount === 0) continue;
 
     const label = formatChartDayLabel(tx.date);
 
