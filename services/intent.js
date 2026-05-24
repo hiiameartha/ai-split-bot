@@ -15,7 +15,17 @@ const DELETE_PREFIX =
   /^(刪除|删除|移除|取消記帳|取消记账|作廢|作废|撤銷|撤销|undo|delete|remove)\s*/i;
 
 const DELETE_LAST_PATTERN =
-  /^(刪除|删除|undo|delete)\s*(上一筆|上一笔|最後一筆|最后笔|最新一筆|最新一笔|last|latest)?\s*$/i;
+  /^(刪除|删除|移除|undo|delete|remove)\s*(上一筆|上一笔|最後一筆|最后笔|最新一筆|最新一笔|last|latest)(資料|资料|记录|記錄|数据|數據)?\s*$/i;
+
+/** 去掉刪除前綴後，是否語意為「刪最後一筆」 */
+const DELETE_LAST_TARGET_RE =
+  /^(上一筆|上一笔|最後一筆|最后笔|最新一筆|最新一笔|最后一笔|最後一笔|last|latest)(資料|资料|记录|記錄|数据|數據)?$/i;
+
+function isDeleteLastTarget(target) {
+  const t = String(target || "").trim();
+  if (!t) return true;
+  return DELETE_LAST_TARGET_RE.test(t);
+}
 
 const DELETE_PICK_PATTERN = /^(刪除|删除|delete)\s*#?(\d+)\s*$/i;
 
@@ -81,7 +91,7 @@ async function classifyIntent(text) {
 
   if (DELETE_PREFIX.test(trimmed)) {
     const target = trimmed.replace(DELETE_PREFIX, "").trim();
-    if (!target || /^(上一筆|上一笔|最後一筆|最后笔|last|latest)$/i.test(target)) {
+    if (isDeleteLastTarget(target)) {
       return { intent: "delete", target: "__last__" };
     }
     return { intent: "delete", target };
@@ -174,5 +184,6 @@ module.exports = {
   classifyIntent,
   isExplicitFreeContext,
   parseBulkDeleteCount,
+  isDeleteLastTarget,
   DELETE_MARKER_SCREENSHOT,
 };

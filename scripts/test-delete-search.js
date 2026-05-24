@@ -61,6 +61,12 @@ async function runIntent() {
 
   const d1 = await classifyIntent("刪除5/26的義大利麵");
   assert(d1.intent === "delete" && d1.target.includes("義大利麵"), "刪除5/26的義大利麵 → delete");
+
+  const d2 = await classifyIntent("移除上一筆資料");
+  assert(
+    d2.intent === "delete" && d2.target === "__last__",
+    "移除上一筆資料 → 刪最後一筆"
+  );
 }
 
 runIntent()

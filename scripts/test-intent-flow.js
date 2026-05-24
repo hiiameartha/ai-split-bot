@@ -10,11 +10,12 @@ const { pickRuleMeme } = require("../services/meme");
 
 const cases = [
   { text: "刪除測試吐司", expect: "delete" },
-  { text: "刪除上一筆", expect: "delete" },
+  { text: "刪除上一筆", expect: "delete_last" },
   { text: "我買了80元便當", expect: "record" },
   { text: "刪除 2", expect: "delete_pick" },
   { text: "undo", expect: "delete" },
   { text: "匯入", expect: "record" },
+  { text: "移除這16筆", expect: "delete_bulk" },
   { text: "移除以上這16種記帳", expect: "delete_bulk" },
   { text: "確認", expect: "delete_confirm" },
   { text: "取消", expect: "delete_cancel" },
@@ -25,6 +26,9 @@ function intentMatches(result, expect) {
   if (expect === "delete_bulk") return result.intent === "delete_bulk";
   if (expect === "delete_confirm") return result.intent === "delete_confirm";
   if (expect === "delete_cancel") return result.intent === "delete_cancel";
+  if (expect === "delete_last") {
+    return result.intent === "delete" && result.target === "__last__";
+  }
   return result.intent === expect;
 }
 
