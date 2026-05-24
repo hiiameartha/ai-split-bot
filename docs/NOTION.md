@@ -30,7 +30,7 @@
 | HTTP 伺服器 | Express 4 |
 | LINE 整合 | `@line/bot-sdk` v9（Webhook + Messaging API） |
 | 持久化 | Google Sheets（Service Account） |
-| AI | OpenAI `gpt-4o-mini`（記帳 JSON、意圖、截圖 Vision、幽默句） |
+| AI | OpenAI `gpt-4o-mini`（記帳 JSON、意圖、幽默句） |
 | 圖表 | QuickChart（POST 短網址，避免 LINE 圖片 URL 長度上限） |
 | 匯率 | ExchangeRate-API |
 
@@ -53,7 +53,7 @@
          ┌─────────────────────────────────────┼─────────────────────────┐
          ▼                 ▼                   ▼                         ▼
    OpenAI API      Google Sheets API    ExchangeRate-API          QuickChart.io
-   (記帳/意圖/Vision)  (Transactions)      (多幣→TWD)              (圖表)
+   (記帳/意圖)       (Transactions)      (多幣→TWD，含快取)         (圖表)
                                                │
                                          Giphy（選填，梗圖）
 ```
@@ -62,17 +62,18 @@
 
 | 模組 | 檔案 | 職責 |
 |------|------|------|
-| 入口 | `index.js` | Express、Webhook、事件與指令編排 |
-| 意圖 | `services/intent.js` | 刪除 / 匯入 / 記帳分流（規則優先，必要時 AI） |
-| 記帳 AI | `services/ai.js` | 自然語言 → 結構化 JSON |
+| 入口 | `index.js` | Express、Webhook（先回 200）、事件與指令編排 |
+| 意圖 | `services/intent.js` | 刪除 / 記帳分流（規則優先，必要時 AI） |
+| 記帳 AI | `services/ai.js` | 自然語言 → 結構化 JSON + parseHints |
+| 帳務 | `services/ledger.js` | 支出／收入／淨額口徑 |
 | 角色 | `services/actor.js` | 「我」、關係人 scope、個人篩選、顯示標籤 |
-| Sheet | `services/googleSheet.js` | CRUD、欄位初始化 |
-| 匯率 | `services/exchange.js` | 多幣別 → TWD |
+| Sheet | `services/googleSheet.js` | CRUD、快取、欄位初始化 |
+| 匯率 | `services/exchange.js` | 多幣別 → TWD（含匯率快取） |
 | 分帳 | `services/settlement.js` | 欠款餘額、分類加總、化簡還款 |
 | 圖表 | `services/charts.js` + `chartSummary.js` | QuickChart URL、配套文案 |
-| 截圖 | `services/chatImage.js` + `chatImageRules.js` | Vision OCR、正負號與匯入規則 |
 | 分類 | `services/category.js` | category / tags 正規化 |
 | 回覆 | `services/reply.js` + `meme.js` + `moodVoice.js` | 幽默句、梗圖、品牌語氣 |
+| Pending | `utils/pendingKey.js` | 群組刪除選號 key（chatId::userId） |
 
 ---
 
@@ -80,14 +81,15 @@
 
 ## 主流程（每則 LINE 訊息）
 
-1. LINE 將訊息事件 `POST` 到 `/webhook`
+1. LINE 將訊息事件 `POST` 到 `/webhook`；伺服器**立即回 200**，背景處理事件
 2. `index.js` 的 `handleEvent` 只處理 `type === "message"`
 3. 依訊息類型分支：
-   - **圖片** → 下載 → Vision 解析截圖 → 暫存 `pendingImports`（5 分鐘）→ 回分析文字，等使用者回「匯入」
+   - **非文字**（含圖片）→ 提示目前僅支援文字記帳
    - **文字且以 `/` 開頭** → `handleCommand`（指令表）
-   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 匯入確認 / 刪除編號
-4. 記帳：`parseExpense` → 匯率 `convertToTWD` → `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`（可附 Giphy 靜態圖）
-5. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）
+   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 刪除編號
+4. 記帳：`parseExpense` → 匯率 `convertToTWD`（快取）→ `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`
+5. 讀 Sheet 有 TTL 快取；寫入／刪除時失效
+6. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）
 
 ## 文字訊息分流
 
@@ -97,7 +99,6 @@
     ├─ /開頭 ──────────────► handleCommand（/help、/debt、/chart…）
     │
     └─ 一般文字 ──► classifyIntent
-                      ├─ import_confirm ─► 寫入 pending 的截圖列
                       ├─ delete_pick ─────► 多筆刪除選編號
                       ├─ delete ──────────► 刪除上一筆 / 關鍵字
                       └─ record ──────────► handleExpense（AI 記帳）
@@ -105,10 +106,9 @@
 
 ## 記憶體暫存（重啟會消失）
 
-| Map | TTL | 用途 |
-|-----|-----|------|
-| `pendingImports` | 5 分鐘 | 截圖分析結果，等「匯入」 |
-| `pendingDeletes` | 5 分鐘 | 關鍵字刪除命中多筆時，等「刪除 2」 |
+| Map | Key | TTL | 用途 |
+|-----|-----|-----|------|
+| `pendingDeletes` | `chatId::userId` | 5 分鐘 | 關鍵字刪除命中多筆時，等「刪除 2」 |
 
 ---
 
@@ -143,23 +143,12 @@
 命中多筆                      → 列出清單，等「刪除 2」
 ```
 
-## 流程 C：聊天截圖匯入
-
-```
-1. 傳送 LINE 聊天記帳截圖
-2. Bot Vision 擷取每筆金額與項目
-3. 正數 = CHAT_IMPORT_POSITIVE_PAYER 幫 CHAT_IMPORT_USER 付
-   負數 = 反向
-4. Bot 回覆分析摘要（尚未寫入）
-5. 使用者回「匯入」→ 批次寫入 Sheet
-```
-
-## 流程 D：查詢與圖表
+## 流程 C：查詢與圖表
 
 | 指令 | 使用者得到什麼 | 資料範圍 |
 |------|----------------|----------|
-| `/debt` | 代墊結算文字 | 整個 chatId |
-| `/debtchart` | 欠款長條圖 | 整個 chatId |
+| `/debt` | 代墊結算文字 | **個人**代墊 |
+| `/debtchart` | 欠款長條圖 | **個人**代墊 |
 | `/members` | 成員消費排行 | 整個 chatId 當月 |
 | `/summary` `/month` | 本月摘要文案 | 個人（recordedBy） |
 | `/chart` | Dashboard 橫條圖 + KPI | 個人 |
@@ -213,7 +202,6 @@
 
 - `刪除 …`、`/undo` → 刪除
 - `刪除 2` → 多筆刪除選號
-- `匯入` → 確認截圖匯入
 - 含「刪掉、不要這筆」等模糊語 → AI 分類
 
 金額 ≤ 0 預設拒絕；訊息含「免費、請客、0元」等則允許。
@@ -241,6 +229,7 @@
 | `chatId` | LINE 帳本 ID |
 | `recordedBy` | 記帳者 LINE userId |
 | `recordedByName` | 記帳者顯示名稱 |
+| `sharedWith` | 分攤參與者（逗號分隔） |
 
 ## Google Cloud 設定檢查清單
 
@@ -261,22 +250,21 @@
 | 指令 | 說明 |
 |------|------|
 | `/help` | 使用說明 |
-| `/debt` | 代墊結算文字（全帳本） |
+| `/debt` | **你的**代墊結算文字 |
 | `/summary` | 個人本月支出文案速覽 |
 | `/month` | 個人本月簡短摘要 |
 | `/chart` | 個人 Dashboard 橫條圖 + KPI |
 | `/category` | 個人分類圓餅圖 |
 | `/monthly` | 個人每日支出折線圖 |
-| `/debtchart` | 欠款長條圖 |
-| `/members` | 成員消費排行（全帳本當月） |
-| `/undo` | 刪除最後一筆 |
-| `/delete [關鍵字]` | 刪除符合項目；無關鍵字則刪最後一筆 |
+| `/debtchart` | **你的**代墊長條圖 |
+| `/members` | 群組戰力榜（每人自己記的） |
+| `/undo` | 刪除**你自己**最後一筆 |
+| `/delete [關鍵字]` | 刪除**你自己**符合的項目 |
 
 ## 自然語言（非 /）
 
 - **記帳**：直接描述消費
 - **刪除**：`刪除上一筆`、`刪除 火鍋`、`刪除 2`
-- **截圖匯入**：傳圖片 → 回覆分析 → 回「匯入」
 
 ---
 
@@ -304,10 +292,8 @@
 | `GOOGLE_CREDENTIALS_JSON` | 整份 SA JSON（雲端常用） |
 | `GOOGLE_CREDENTIALS_PATH` | 自訂憑證路徑 |
 | `GIPHY_API_KEY` | 梗圖（LINE 用 still JPEG） |
-| `CHAT_IMPORT_POSITIVE_PAYER` | 截圖正數付款人（預設 男友） |
-| `CHAT_IMPORT_USER` | 截圖中的「我」（預設 我） |
-| `CHAT_IMPORT_CURRENCY` | 截圖預設幣別（預設 MYR） |
-| `CHAT_IMPORT_YEAR` | 截圖日期缺年份時補上 |
+| `SHEET_CACHE_TTL_MS` | Sheet 讀取快取 TTL（毫秒，預設 30000） |
+| `EXCHANGE_CACHE_TTL_MS` | 匯率快取 TTL（毫秒，預設 3600000） |
 
 ---
 
@@ -382,29 +368,27 @@ ai-split-bot/
 ├── credentials/
 │   └── credentials.json.example
 ├── services/
-│   ├── ai.js, intent.js, actor.js, googleSheet.js
-│   ├── exchange.js, settlement.js, charts.js, chartSummary.js
-│   ├── chatImage.js, chatImageRules.js, category.js, tagEnrich.js
+│   ├── ai.js, intent.js, parseHints.js, ledger.js, actor.js
+│   ├── googleSheet.js, exchange.js, settlement.js
+│   ├── charts.js, chartSummary.js, category.js, tagEnrich.js
 │   └── reply.js, meme.js, moodVoice.js
 ├── utils/
-│   ├── chatId.js, date.js, formatter.js, chartTheme.js
+│   ├── chatId.js, pendingKey.js, date.js, formatter.js, chartTheme.js
+├── .github/workflows/test.yml
 └── scripts/
+    ├── run-all-tests.js
     └── test-*.js
 ```
 
 ---
 
-# 十、測試腳本（不需啟動 LINE）
+# 十、測試（不需啟動 LINE）
 
 ```bash
+npm test                 # 全部測試（CI 同款）
 npm run test:intent
-npm run test:category
-npm run test:charts
-npm run test:chat-image
-npm run test:tags
-node scripts/test-settlement.js
-node scripts/test-actor.js
-node scripts/test-date.js
+npm run test:ledger
+npm run test:google-sheet
 ```
 
 ---

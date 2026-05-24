@@ -18,6 +18,7 @@ const {
   deleteByPickIndex,
 } = require("./services/googleSheet");
 const { getChatIdFromEvent } = require("./utils/chatId");
+const { pendingKey } = require("./utils/pendingKey");
 const {
   resolveActorsForStorage,
   relabelTotalsForViewer,
@@ -29,7 +30,6 @@ const { calculateBalances } = require("./services/settlement");
 const {
   summarizeLedger,
   getPersonalDebtTransactions,
-  filterDeletableTransactions,
   summarizeByRecorder,
   aggregateDailyExpense,
 } = require("./services/ledger");
@@ -55,8 +55,6 @@ const {
   formatError,
   formatDeletePickList,
   formatZeroAmountWarning,
-  formatChatImageAnalysis,
-  formatImportDone,
 } = require("./utils/formatter");
 
 const requiredEnv = [
@@ -84,39 +82,28 @@ const client = new line.messagingApi.MessagingApiClient({
   channelAccessToken: lineConfig.channelAccessToken,
 });
 
-const blobClient = new line.messagingApi.MessagingApiBlobClient({
-  channelAccessToken: lineConfig.channelAccessToken,
-});
-
-const { analyzeChatImage, getImportConfig } = require("./services/chatImage");
-
 /** @type {Map<string, { matches: object[], at: number }>} */
 const pendingDeletes = new Map();
-/** @type {Map<string, { transactions: object[], at: number }>} */
-const pendingImports = new Map();
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
 const app = express();
 
 app.get("/", (_req, res) => {
-  res.json({ status: "ok", service: "MoodPay", version: "1.2.0" });
+  res.json({ status: "ok", service: "MoodPay", version: "1.3.0" });
 });
 
 app.get("/health", (_req, res) => {
   res.json({ status: "healthy" });
 });
 
-app.post("/webhook", line.middleware(lineConfig), async (req, res) => {
+app.post("/webhook", line.middleware(lineConfig), (req, res) => {
   console.log("[Webhook] 收到事件");
+  res.status(200).json({ success: true });
 
-  try {
-    const events = req.body.events || [];
-    await Promise.all(events.map((event) => handleEvent(event)));
-    res.status(200).json({ success: true });
-  } catch (err) {
-    console.error("[Webhook] 處理錯誤:", err);
-    res.status(500).json({ error: err.message });
-  }
+  const events = req.body.events || [];
+  Promise.all(events.map((event) => handleEvent(event))).catch((err) => {
+    console.error("[Webhook] 背景處理錯誤:", err);
+  });
 });
 
 async function handleEvent(event) {
@@ -131,15 +118,14 @@ async function handleEvent(event) {
   const actor = await getLineActor(event);
 
   try {
-    if (event.message?.type === "image") {
-      await replyMessage(replyToken, {
-        text: await handleChatImage(event.message.id, chatId, actor),
-      });
-      return;
-    }
-
     if (event.message?.type !== "text") {
-      console.log("[Event] 非文字/圖片訊息，略過");
+      if (event.message?.type === "image") {
+        await replyMessage(replyToken, {
+          text: "MoodPay 目前只支援文字記帳 💬\n直接描述消費就好，例：我買了 80 元便當",
+        });
+      } else {
+        console.log("[Event] 非文字訊息，略過");
+      }
       return;
     }
 
@@ -156,11 +142,9 @@ async function handleEvent(event) {
       const intent = await classifyIntent(text);
       console.log("[Intent]", intent);
 
-      if (intent.intent === "import_confirm") {
-        replyPayload = { text: await handleImportConfirm(chatId, actor) };
-      } else if (intent.intent === "delete_pick") {
+      if (intent.intent === "delete_pick") {
         replyPayload = {
-          text: await handleDeletePick(chatId, intent.pickIndex),
+          text: await handleDeletePick(chatId, intent.pickIndex, actor),
         };
       } else if (intent.intent === "delete") {
         replyPayload = await handleDelete(text, intent.target, chatId, actor);
@@ -174,66 +158,6 @@ async function handleEvent(event) {
     console.error("[Event] 處理失敗:", err);
     await replyMessage(replyToken, { text: formatError(err.message) });
   }
-}
-
-/**
- * 分析聊天記帳截圖
- * @param {string} messageId
- * @param {string} chatId
- */
-async function handleChatImage(messageId, chatId, actor) {
-  console.log("[Flow] 聊天截圖分析");
-  const { transactions, cfg } = await analyzeChatImage(blobClient, messageId);
-
-  pendingImports.set(chatId, {
-    transactions,
-    cfg,
-    actor,
-    at: Date.now(),
-  });
-
-  return formatChatImageAnalysis(transactions, cfg, actor);
-}
-
-/**
- * @param {string} chatId
- */
-async function handleImportConfirm(chatId, actor) {
-  const pending = getPendingImport(chatId);
-  if (!pending) {
-    return "還沒有截圖分析可以匯入 📷\n先傳聊天記帳截圖，MoodPay 讀完你再回「匯入」";
-  }
-
-  console.log("[Flow] 匯入", pending.transactions.length, "筆");
-  const importActor = pending.actor || actor;
-
-  for (const tx of pending.transactions) {
-    const roles = resolveActorsForStorage(tx, importActor);
-    await appendTransaction(
-      {
-        ...tx,
-        payer: roles.payer,
-        consumer: roles.consumer,
-        sharedWith: roles.sharedWith,
-        recordedBy: importActor.userId,
-        recordedByName: importActor.displayName,
-      },
-      chatId
-    );
-  }
-
-  pendingImports.delete(chatId);
-  return formatImportDone(pending.transactions.length);
-}
-
-function getPendingImport(chatId) {
-  const p = pendingImports.get(chatId);
-  if (!p) return null;
-  if (Date.now() - p.at > PENDING_TTL_MS) {
-    pendingImports.delete(chatId);
-    return null;
-  }
-  return p;
 }
 
 /**
@@ -316,14 +240,14 @@ async function handleDelete(text, target, chatId, actor) {
   }
 
   if (result.status === "multiple") {
-    pendingDeletes.set(chatId, {
+    pendingDeletes.set(pendingKey(chatId, actor), {
       matches: result.matches,
       at: Date.now(),
     });
     return { text: formatDeletePickList(result.matches, result.keyword) };
   }
 
-  pendingDeletes.delete(chatId);
+  pendingDeletes.delete(pendingKey(chatId, actor));
   const reply = await generateDeleteReply(result.transaction);
   return reply;
 }
@@ -331,15 +255,16 @@ async function handleDelete(text, target, chatId, actor) {
 /**
  * @param {string} chatId
  * @param {number} pickIndex
+ * @param {object} actor
  */
-async function handleDeletePick(chatId, pickIndex) {
-  const pending = getPendingDelete(chatId);
+async function handleDeletePick(chatId, pickIndex, actor) {
+  const pending = getPendingDelete(chatId, actor);
   if (!pending) {
     return "還沒有要選的刪除項目\n先輸入「刪除 關鍵字」讓 MoodPay 找";
   }
 
   const result = await deleteByPickIndex(pending.matches, pickIndex, chatId);
-  pendingDeletes.delete(chatId);
+  pendingDeletes.delete(pendingKey(chatId, actor));
 
   if (result.status === "ok") {
     const reply = await generateDeleteReply(result.transaction);
@@ -349,21 +274,17 @@ async function handleDeletePick(chatId, pickIndex) {
   return `這個編號不存在喔，請選 1～${pending.matches.length}`;
 }
 
-function getPendingDelete(chatId) {
-  const p = pendingDeletes.get(chatId);
+function getPendingDelete(chatId, actor) {
+  const key = pendingKey(chatId, actor);
+  const p = pendingDeletes.get(key);
   if (!p) return null;
   if (Date.now() - p.at > PENDING_TTL_MS) {
-    pendingDeletes.delete(chatId);
+    pendingDeletes.delete(key);
     return null;
   }
   return p;
 }
 
-/**
- * @param {string} text
- * @param {string} chatId
- * @returns {Promise<string|{ text: string, imageUrl?: string }>}
- */
 /**
  * @param {object} event
  * @returns {Promise<{ userId: string, displayName: string, selfLabel: string }>}
@@ -453,10 +374,6 @@ async function handleCommand(text, chatId, actor) {
   }
 }
 
-/**
- * /chart — Dashboard 總覽（橫條圖 + KPI）
- * @param {object[]} transactions
- */
 async function handleDashboardChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
   const byCategory = summarizeLedger(monthTx).byCategoryExpense;
@@ -470,10 +387,6 @@ async function handleDashboardChartCommand(transactions, actor) {
   return { text: summary, imageUrl };
 }
 
-/**
- * /category — 已分類圓餅圖 + 深度分析
- * @param {object[]} transactions
- */
 async function handleCategoryOnlyChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
   const byCategory = summarizeLedger(monthTx).byCategoryExpense;
@@ -487,10 +400,6 @@ async function handleCategoryOnlyChartCommand(transactions, actor) {
   return { text: summary, imageUrl };
 }
 
-/**
- * /monthly — 每日支出折線圖
- * @param {object[]} transactions
- */
 async function handleMonthlyChartCommand(transactions, actor) {
   const { monthTx, meta } = getPersonalMonthContext(transactions, actor);
   const daily = aggregateDailyExpense(monthTx);
@@ -504,10 +413,6 @@ async function handleMonthlyChartCommand(transactions, actor) {
   return { text: summary, imageUrl };
 }
 
-/**
- * /debtchart — 欠款長條圖
- * @param {object[]} transactions
- */
 async function handleDebtChartCommand(transactions, actor) {
   const personalDebtTx = getPersonalDebtTransactions(transactions, actor);
   const balances = relabelTotalsForViewer(
@@ -525,10 +430,6 @@ async function handleDebtChartCommand(transactions, actor) {
   return { text: summary, imageUrl };
 }
 
-/**
- * /members — 成員消費比較
- * @param {object[]} transactions
- */
 async function handleMembersChartCommand(transactions, actor) {
   const { monthTx, meta } = getCurrentMonthContext(transactions);
   const byMember = relabelTotalsForViewer(
@@ -595,7 +496,7 @@ app.listen(PORT, () => {
   console.log("═══════════════════════════════════════");
   console.log(`  MoodPay Bot 已啟動`);
   console.log(`  Port: ${PORT}`);
-  console.log(`  Webhook: POST /webhook`);
+  console.log(`  Webhook: POST /webhook（非同步回 200）`);
   if (process.env.GIPHY_API_KEY?.trim()) {
     console.log("  Giphy: 已啟用（記帳/刪除會附梗圖）");
   } else {
@@ -616,4 +517,8 @@ module.exports = {
   handleExpense,
   handleDelete,
   classifyIntent,
+  pendingDeletes,
+  pendingKey,
+  PENDING_TTL_MS,
+  getPendingDelete,
 };

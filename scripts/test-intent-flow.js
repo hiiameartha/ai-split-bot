@@ -15,6 +15,7 @@ const cases = [
   { text: "我買了80元便當", expect: "record" },
   { text: "刪除 2", expect: "delete_pick" },
   { text: "undo", expect: "delete" },
+  { text: "匯入", expect: "record" },
 ];
 
 async function run() {

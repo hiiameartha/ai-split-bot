@@ -1,19 +1,21 @@
 {
   "name": "moodpay",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "description": "MoodPay - LINE AI 多人記帳與分帳系統",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test": "node scripts/run-all-tests.js",
     "test:intent": "node scripts/test-intent-flow.js",
     "test:category": "node scripts/test-category.js",
-    "test:chat-image": "node scripts/test-chat-image.js",
     "test:charts": "node scripts/test-charts.js",
     "test:tags": "node scripts/test-tags.js",
     "test:parse-hints": "node scripts/test-parse-hints.js",
     "test:ledger": "node scripts/test-ledger.js",
-    "test:google-sheet": "node scripts/test-google-sheet.js"
+    "test:google-sheet": "node scripts/test-google-sheet.js",
+    "test:exchange": "node scripts/test-exchange.js",
+    "test:pending-key": "node scripts/test-pending-key.js"
   },
   "engines": {
     "node": ">=18"

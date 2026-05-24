@@ -19,8 +19,6 @@ const DELETE_LAST_PATTERN =
 
 const DELETE_PICK_PATTERN = /^(刪除|删除|delete)\s*#?(\d+)\s*$/i;
 
-const IMPORT_CONFIRM_PATTERN = /^(匯入|导入|確認匯入|确认导入|寫入|写入)$/i;
-
 const RECORD_BLOCK_PATTERN =
   /^(我|男友|女友|小胖|大家).*(買了|付了|代墊|吃|花)/;
 
@@ -41,10 +39,6 @@ async function classifyIntent(text) {
       intent: "delete_pick",
       pickIndex: parseInt(pickMatch[2], 10),
     };
-  }
-
-  if (IMPORT_CONFIRM_PATTERN.test(trimmed)) {
-    return { intent: "import_confirm" };
   }
 
   if (DELETE_LAST_PATTERN.test(trimmed) || /^\/undo\s*$/i.test(trimmed)) {

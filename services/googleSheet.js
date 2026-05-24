@@ -45,6 +45,17 @@ let resolvedSheetTitle = SHEET_NAME;
 /** @type {number|null} */
 let resolvedSheetId = null;
 
+const SHEET_CACHE_TTL_MS = parseInt(
+  process.env.SHEET_CACHE_TTL_MS || "30000",
+  10
+);
+/** @type {{ rows: object[], fetchedAt: number }|null} */
+let transactionsCache = null;
+
+function invalidateTransactionsCache() {
+  transactionsCache = null;
+}
+
 /** 修正 Render / 環境變數常見的 PEM 換行問題 */
 function normalizeGoogleCredentials(credentials) {
   const creds = { ...credentials };
@@ -384,10 +395,24 @@ async function fetchRawRows() {
  * 讀取所有交易紀錄
  * @returns {Promise<object[]>}
  */
-async function getAllTransactions() {
+async function getAllTransactions(forceRefresh = false) {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    transactionsCache &&
+    now - transactionsCache.fetchedAt < SHEET_CACHE_TTL_MS
+  ) {
+    console.log(
+      `[GoogleSheet] 使用快取 ${transactionsCache.rows.length} 筆（全表）`
+    );
+    return transactionsCache.rows;
+  }
+
   const rows = await fetchRawRows();
+  const transactions = mapRowsToTransactions(rows);
+  transactionsCache = { rows: transactions, fetchedAt: now };
   console.log(`[GoogleSheet] 讀取 ${rows.length} 筆交易（全表）`);
-  return mapRowsToTransactions(rows);
+  return transactions;
 }
 
 /**
@@ -454,6 +479,7 @@ async function appendTransaction(data, chatId) {
   });
 
   console.log("[GoogleSheet] 寫入成功");
+  invalidateTransactionsCache();
   return { ...data, id, chatId: bookId };
 }
 
@@ -491,6 +517,7 @@ async function deleteRowByIndex(rowIndex) {
   });
 
   console.log(`[GoogleSheet] 已刪除第 ${rowIndex} 列`);
+  invalidateTransactionsCache();
 }
 
 /**
@@ -607,5 +634,7 @@ module.exports = {
   transactionToRow,
   serializeSharedWith,
   parseSharedWith,
+  invalidateTransactionsCache,
+  SHEET_CACHE_TTL_MS,
   HEADERS,
 };

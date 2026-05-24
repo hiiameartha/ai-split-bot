@@ -2,8 +2,7 @@
  * MoodPay - 訊息格式化（產品語氣）
  */
 
-const { BRAND, pick, formatMoney, REPORT } = require("../services/moodVoice");
-const { labelForViewer } = require("../services/actor");
+const { BRAND, formatMoney, REPORT } = require("../services/moodVoice");
 const { simplifyDebts } = require("../services/settlement");
 const { formatDateTimeForDisplay } = require("./date");
 
@@ -68,91 +67,9 @@ function formatMonthSummary(total, count) {
   ].join("\n");
 }
 
-function formatChatImageAnalysis(transactions, cfg, viewer) {
-  const me = viewer?.selfLabel || cfg.userName || "我";
-  const lines = [
-    BRAND,
-    "  截圖讀心術完成 📷",
-    "",
-    `  正數＝${cfg.positivePayer} 幫 ${me} 付`,
-    `  負數＝${me} 請 ${cfg.positivePayer}`,
-    "",
-  ];
-
-  let sumPaidForMe = 0;
-  let sumIPaid = 0;
-  let countPaidForMe = 0;
-  let countIPaid = 0;
-  const currency = transactions[0]?.currency || "MYR";
-
-  const show = transactions.slice(0, 18);
-  for (let i = 0; i < show.length; i++) {
-    const tx = show[i];
-    const isPositive = tx.relation === "paid_for_me";
-    const icon = isPositive ? "➕" : "➖";
-    const payer = labelForViewer(tx.payer, viewer);
-    const consumer = labelForViewer(tx.consumer, viewer);
-    const desc = `${payer} 幫 ${consumer} 付`;
-
-    lines.push(`${i + 1}. ${icon} ${tx.amount} ${tx.currency} ${tx.item}`);
-    lines.push(`   → ${desc}`);
-
-    if (isPositive) {
-      countPaidForMe += 1;
-      sumPaidForMe += tx.amount;
-    } else {
-      countIPaid += 1;
-      sumIPaid += tx.amount;
-    }
-  }
-
-  if (transactions.length > show.length) {
-    lines.push(`…還有 ${transactions.length - show.length} 筆，匯入後一起看`);
-  }
-
-  lines.push("");
-  lines.push(
-    `📗 ${cfg.positivePayer} 幫你付：${countPaidForMe} 筆，共 ${round2(sumPaidForMe)} ${currency}`
-  );
-  lines.push(
-    `📘 你幫 ${cfg.positivePayer} 付：${countIPaid} 筆，共 ${round2(sumIPaid)} ${currency}`
-  );
-
-  const net = round2(sumPaidForMe - sumIPaid);
-  if (net > 0) {
-    lines.push(`💡 粗算你約欠 ${cfg.positivePayer} ${net} ${currency}（未含舊帳）`);
-  } else if (net < 0) {
-    lines.push(
-      `💡 粗算 ${cfg.positivePayer} 約欠你 ${Math.abs(net)} ${currency}（未含舊帳）`
-    );
-  }
-
-  lines.push("");
-  lines.push(`共抓到 ${transactions.length} 筆`);
-  lines.push("滿意就回「匯入」，MoodPay 幫你寫進帳本");
-  lines.push("不滿意就重傳，不會亂記");
-
-  return lines.join("\n");
-}
-
-function round2(n) {
-  return Math.round(n * 100) / 100;
-}
-
-function formatImportDone(count) {
-  return pick([
-    `好了，${count} 筆都進帳本了 ✨\n/debt 看代墊結算`,
-    `匯入完成：${count} 筆\nMoodPay 已幫你記好，/debt 查欠債`,
-    `${count} 筆寫進去了～\n想算帳就 /debt`,
-  ]);
-}
-
 function formatHelp() {
   return [
     `${BRAND} 使用指南`,
-    "",
-    "📷 傳聊天截圖",
-    "  MoodPay 會讀圖，回「匯入」才寫帳",
     "",
     "💬 直接打字記帳",
     "  例：我買了 80 元便當",
@@ -218,6 +135,4 @@ module.exports = {
   formatError,
   formatDeletePickList,
   formatZeroAmountWarning,
-  formatChatImageAnalysis,
-  formatImportDone,
 };

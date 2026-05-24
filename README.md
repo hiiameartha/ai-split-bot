@@ -36,7 +36,6 @@ flowchart TB
     AI[記帳解析 ai.js]
     Hints[後處理 parseHints.js]
     Ledger[帳務口徑 ledger.js]
-    Img[截圖解析 chatImage.js]
     Actor[角色 scope actor.js]
     FX[匯率 exchange.js]
     Settle[分帳 settlement.js]
@@ -57,7 +56,6 @@ flowchart TB
   LINEAPI -->|Webhook HTTPS| WH
   WH --> Router
   Router --> Intent
-  Router --> Img
   Intent --> AI
   AI --> Hints
   Hints --> Ledger
@@ -66,14 +64,12 @@ flowchart TB
   Actor --> Sheet
   Ledger --> Chart
   Ledger --> Settle
-  Img --> Actor
   Router --> Settle
   Router --> Chart
   Chart --> QC
   Router --> Reply
   Reply --> Giphy
   AI --> OpenAI
-  Img --> OpenAI
   Sheet --> GSheet
   FX --> ER
 ```
@@ -83,7 +79,7 @@ flowchart TB
 | HTTP 伺服器 | Express 4 |
 | LINE 整合 | `@line/bot-sdk` v9（Webhook middleware + Messaging API） |
 | 持久化 | Google Sheets（Service Account） |
-| AI | OpenAI `gpt-4o-mini`（記帳 JSON、意圖、截圖 Vision、幽默句） |
+| AI | OpenAI `gpt-4o-mini`（記帳 JSON、意圖、幽默句） |
 | 圖表 | QuickChart（POST 短網址，避免 LINE 圖片 URL 長度上限） |
 
 **HTTP 端點**
@@ -98,14 +94,14 @@ flowchart TB
 
 ## 請求處理流程
 
-1. LINE 將訊息事件 `POST` 到 `/webhook`。
+1. LINE 將訊息事件 `POST` 到 `/webhook`；伺服器**立即回 200**，再在背景處理（避免 LINE / Render 逾時）。
 2. `index.js` 的 `handleEvent` 只處理 `type === "message"`。
 3. 依訊息類型分支：
-   - **圖片** → 下載 → Vision 解析截圖 → 暫存 `pendingImports`（5 分鐘）→ 回分析文字，等使用者回「匯入」。
+   - **非文字**（含圖片）→ 提示目前僅支援文字記帳。
    - **文字且以 `/` 開頭** → `handleCommand`（指令表）。
-   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 匯入確認 / 刪除編號。
-4. 記帳：`parseExpense`（AI）→ `applyParseHints`（算式、關係、收入／請客校正）→ 匯率 `convertToTWD` → `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`（可附 Giphy 靜態圖）。
-5. 報表／圖表：一律經 `ledger.summarizeLedger` 加總（支出、收入、淨額分開）。
+   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 刪除編號。
+4. 記帳：`parseExpense`（AI）→ `applyParseHints` → 匯率 `convertToTWD`（含快取）→ `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`。
+5. 報表／圖表：一律經 `ledger.summarizeLedger` 加總；讀 Sheet 有 TTL 快取（寫入／刪除時失效）。
 6. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）。
 
 ```text
@@ -114,7 +110,6 @@ flowchart TB
     ├─ /開頭 ──────────────► handleCommand
     │
     └─ 一般文字 ──► classifyIntent
-                      ├─ import_confirm ─► 寫入 pending 的截圖列
                       ├─ delete_pick ─────► 多筆刪除選編號
                       ├─ delete ──────────► 刪除上一筆 / 關鍵字
                       └─ record ──────────► handleExpense（AI 記帳）
@@ -130,10 +125,9 @@ flowchart TB
 
 **記憶體暫存（重啟會消失）**
 
-| Map | TTL | 用途 |
-|-----|-----|------|
-| `pendingImports` | 5 分鐘 | 截圖分析結果，等「匯入」 |
-| `pendingDeletes` | 5 分鐘 | 關鍵字刪除命中多筆時，等「刪除 2」 |
+| Map | Key | TTL | 用途 |
+|-----|-----|-----|------|
+| `pendingDeletes` | `chatId::userId` | 5 分鐘 | 關鍵字刪除命中多筆時，等「刪除 2」 |
 
 ---
 
@@ -220,7 +214,6 @@ AI 解析後會再校正，減少主受詞顛倒、算式算錯：
 
 - `刪除 …`、`/undo` → 刪除
 - `刪除 2` → 多筆刪除選號
-- `匯入` → 確認截圖匯入
 - 含「刪掉、不要這筆」等模糊語 → AI 分類
 
 金額 ≤ 0 預設拒絕寫入；`income`、`treat` 或訊息含「免費、不用付錢、請客」等則允許（`isExplicitFreeContext`）。
@@ -240,15 +233,13 @@ ai-split-bot/
 │   ├── ai.js                   # 自然語言記帳 → JSON
 │   ├── parseHints.js           # 算式金額、relation 校正、income / treat
 │   ├── ledger.js               # 帳務口徑（支出／收入／淨額、個人帳本）
-│   ├── intent.js               # 刪除 / 匯入 / 記帳意圖
+│   ├── intent.js               # 刪除 / 記帳意圖
 │   ├── actor.js                # 我 / 關係人 scope、個人篩選、顯示標籤
-│   ├── googleSheet.js          # Sheet CRUD、欄位初始化
-│   ├── exchange.js             # 多幣別 → TWD
+│   ├── googleSheet.js          # Sheet CRUD、快取、欄位初始化
+│   ├── exchange.js             # 多幣別 → TWD（含匯率快取）
 │   ├── settlement.js           # 欠款餘額、化簡還款邊
 │   ├── charts.js               # QuickChart URL、本月上下文
 │   ├── chartSummary.js         # 圖表配套文案（產品語氣）
-│   ├── chatImage.js            # LINE 圖片下載 + Vision 截圖 OCR
-│   ├── chatImageRules.js       # 截圖正負號、日期、匯入設定
 │   ├── category.js             # category / tags 正規化
 │   ├── tagEnrich.js            # 標籤補強（內部使用）
 │   ├── reply.js                # 記帳 / 刪除幽默回覆
@@ -256,14 +247,17 @@ ai-split-bot/
 │   └── moodVoice.js            # 品牌語氣、金額格式
 ├── utils/
 │   ├── chatId.js               # LINE source → chatId
+│   ├── pendingKey.js           # 群組 pending 狀態 key
 │   ├── date.js                 # MOODPAY_TIMEZONE、交易時間格式
-│   ├── formatter.js            # /help、欠款、截圖分析、錯誤訊息
+│   ├── formatter.js            # /help、欠款、錯誤訊息
 │   └── chartTheme.js           # 圖表深色 fintech 主題
+├── .github/workflows/
+│   └── test.yml                # CI：npm test
 └── scripts/
+    ├── run-all-tests.js        # npm test 入口
     ├── test-intent-flow.js
     ├── test-category.js
     ├── test-charts.js
-    ├── test-chat-image.js
     ├── test-tags.js
     ├── test-settlement.js
     ├── test-actor.js
@@ -348,14 +342,6 @@ ai-split-bot/
 
 - **記帳**：直接描述消費、收入（例：薪水 50000）、請客（例：被請吃不用付）。
 - **刪除**：`刪除上一筆`、`刪除 火鍋`、`刪除 2`（多筆時）；無法刪除他人記的列。
-- **截圖匯入**：傳圖片 → 回覆分析 → 回「匯入」寫入。
-
-### 聊天截圖匯入
-
-1. 傳送 LINE 聊天記帳截圖。
-2. Bot 用 Vision 擷取每筆金額與項目。
-3. **正數** = `CHAT_IMPORT_POSITIVE_PAYER` 幫 `CHAT_IMPORT_USER` 付；**負數** = 反向。
-4. 回「匯入」後批次寫入 Sheet。
 
 ---
 
@@ -387,10 +373,8 @@ cp .env.example .env
 | `GOOGLE_CREDENTIALS_JSON` | 整份 Service Account JSON（雲端常用，勿 commit） |
 | `GOOGLE_CREDENTIALS_PATH` | 自訂憑證檔路徑 |
 | `GIPHY_API_KEY` | 記帳／刪除附梗圖（LINE 用 still JPEG，非 GIF） |
-| `CHAT_IMPORT_POSITIVE_PAYER` | 截圖正數付款人（預設 `男友`） |
-| `CHAT_IMPORT_USER` | 截圖中的「我」（預設 `我`） |
-| `CHAT_IMPORT_CURRENCY` | 截圖預設幣別（預設 `MYR`） |
-| `CHAT_IMPORT_YEAR` | 截圖日期缺年份時補上 |
+| `SHEET_CACHE_TTL_MS` | Sheet 全表讀取快取 TTL（毫秒，預設 `30000`） |
+| `EXCHANGE_CACHE_TTL_MS` | 匯率快取 TTL（毫秒，預設 `3600000`） |
 
 ---
 
@@ -457,27 +441,20 @@ Bot 必須在**有固定 HTTPS 網址的伺服器**上執行，LINE 才能隨時
 
 ---
 
-## 測試腳本
+## 測試
 
-不需啟動 LINE，可在專案根目錄執行：
+不需啟動 LINE，在專案根目錄執行：
 
 ```bash
+npm test                 # 跑全部單元測試（CI 同款）
 npm run test:intent      # 意圖分流
 npm run test:category    # 分類 / tags
 npm run test:charts      # 圖表 URL
-npm run test:chat-image  # 截圖規則（需圖檔時見腳本說明）
-npm run test:tags
+npm run test:ledger      # 帳務口徑
+npm run test:google-sheet # sharedWith 列映射
 ```
 
-另有下列腳本可直接執行：
-
-```bash
-node scripts/test-settlement.js   # 分帳餘額
-node scripts/test-actor.js        # 個人篩選、scope 標籤
-node scripts/test-parse-hints.js  # 算式、income、treat、代付方向
-node scripts/test-ledger.js       # 帳務口徑、個人代墊隔離
-node scripts/test-date.js
-```
+GitHub Actions 會在 push / PR 時自動執行 `npm test`（見 `.github/workflows/test.yml`）。
 
 ### 已知限制（後續可改）
 
