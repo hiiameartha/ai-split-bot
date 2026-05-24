@@ -33,6 +33,7 @@ const HEADERS = [
   "chatId",
   "recordedBy",
   "recordedByName",
+  "sharedWith",
 ];
 
 const SHEET_NAME = "Transactions";
@@ -214,6 +215,7 @@ async function syncHeaders(sheets, spreadsheetId, firstRow) {
   const hasId = firstRow.includes("id");
   const hasChatId = firstRow.includes("chatId");
   const hasRecordedBy = firstRow.includes("recordedBy");
+  const hasSharedWith = firstRow.includes("sharedWith");
   const legacyDateHeader = firstRow[0] === "日期";
 
   if (
@@ -221,6 +223,7 @@ async function syncHeaders(sheets, spreadsheetId, firstRow) {
     !hasId ||
     !hasChatId ||
     !hasRecordedBy ||
+    !hasSharedWith ||
     legacyDateHeader ||
     firstRow.length < HEADERS.length
   ) {
@@ -247,6 +250,14 @@ function mapRowsToTransactions(rows) {
  * @param {string[]} row
  * @param {number} rowIndex
  */
+function serializeSharedWith(sharedWith) {
+  return serializeTags(sharedWith);
+}
+
+function parseSharedWith(value) {
+  return parseTags(value);
+}
+
 function mapRowToTransaction(row, rowIndex) {
   const len = row.length;
   let category = "other";
@@ -256,8 +267,18 @@ function mapRowToTransaction(row, rowIndex) {
   let chatId = "";
   let recordedBy = "";
   let recordedByName = "";
+  let sharedWith = [];
 
-  if (len >= 15) {
+  if (len >= 16) {
+    category = row[8] || "other";
+    tags = parseTags(row[9]);
+    rawText = row[10] || "";
+    id = row[11] || "";
+    chatId = row[12] || "";
+    recordedBy = row[13] || "";
+    recordedByName = row[14] || "";
+    sharedWith = parseSharedWith(row[15]);
+  } else if (len >= 15) {
     category = row[8] || "other";
     tags = parseTags(row[9]);
     rawText = row[10] || "";
@@ -315,7 +336,35 @@ function mapRowToTransaction(row, rowIndex) {
     rawText,
     recordedBy,
     recordedByName,
+    sharedWith,
   };
+}
+
+/**
+ * 交易物件 → Sheet 列（供寫入與測試）
+ * @param {object} data
+ * @param {string} id
+ * @param {string} chatId
+ */
+function transactionToRow(data, id, chatId) {
+  return [
+    data.date || formatTransactionDateTime(),
+    data.payer || "",
+    data.consumer || "",
+    data.item || "",
+    data.amount ?? "",
+    data.currency || "",
+    data.twdAmount ?? "",
+    data.relation || "",
+    data.category || "other",
+    serializeTags(data.tags),
+    data.rawText || "",
+    id,
+    chatId,
+    data.recordedBy || "",
+    data.recordedByName || "",
+    serializeSharedWith(data.sharedWith),
+  ];
 }
 
 async function fetchRawRows() {
@@ -392,23 +441,7 @@ async function appendTransaction(data, chatId) {
   const spreadsheetId = getSpreadsheetId();
   const id = data.id || crypto.randomUUID();
 
-  const row = [
-    data.date || formatTransactionDateTime(),
-    data.payer || "",
-    data.consumer || "",
-    data.item || "",
-    data.amount ?? "",
-    data.currency || "",
-    data.twdAmount ?? "",
-    data.relation || "",
-    data.category || "other",
-    serializeTags(data.tags),
-    data.rawText || "",
-    id,
-    bookId,
-    data.recordedBy || "",
-    data.recordedByName || "",
-  ];
+  const row = transactionToRow(data, id, bookId);
 
   console.log("[GoogleSheet] 新增交易:", row);
 
@@ -570,5 +603,9 @@ module.exports = {
   deleteLastTransaction,
   deleteByItemKeyword,
   deleteByPickIndex,
+  mapRowToTransaction,
+  transactionToRow,
+  serializeSharedWith,
+  parseSharedWith,
   HEADERS,
 };

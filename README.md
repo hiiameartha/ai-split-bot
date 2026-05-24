@@ -293,6 +293,7 @@ ai-split-bot/
 | `chatId` | LINE 帳本 ID |
 | `recordedBy` | 記帳者 LINE userId |
 | `recordedByName` | 記帳者顯示名稱 |
+| `sharedWith` | 分攤參與者（逗號分隔，`shared` 時必填） |
 
 ### Google Cloud 設定
 
@@ -480,8 +481,8 @@ node scripts/test-date.js
 
 ### 已知限制（後續可改）
 
-- **`sharedWith` 尚未寫入 Sheet**：多人 `shared` 重讀後可能只剩 payer／consumer 兩人分攤。
 - **舊列無 `recordedBy`**：個人報表隔離依賴暱稱 fallback，建議補欄或遷移。
+- **舊列無 `sharedWith`**：`shared` 交易重讀後仍 fallback 為 payer／consumer 兩人分攤；新記帳會寫入完整名單。
 
 ---
 

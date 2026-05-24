@@ -12,7 +12,8 @@
     "test:charts": "node scripts/test-charts.js",
     "test:tags": "node scripts/test-tags.js",
     "test:parse-hints": "node scripts/test-parse-hints.js",
-    "test:ledger": "node scripts/test-ledger.js"
+    "test:ledger": "node scripts/test-ledger.js",
+    "test:google-sheet": "node scripts/test-google-sheet.js"
   },
   "engines": {
     "node": ">=18"
