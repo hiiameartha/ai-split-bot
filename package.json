@@ -15,7 +15,8 @@
     "test:ledger": "node scripts/test-ledger.js",
     "test:google-sheet": "node scripts/test-google-sheet.js",
     "test:exchange": "node scripts/test-exchange.js",
-    "test:pending-key": "node scripts/test-pending-key.js"
+    "test:pending-key": "node scripts/test-pending-key.js",
+    "test:delete-search": "node scripts/test-delete-search.js"
   },
   "engines": {
     "node": ">=18"

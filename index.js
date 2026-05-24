@@ -14,9 +14,13 @@ const {
   appendTransaction,
   getTransactions,
   deleteLastTransaction,
-  deleteByItemKeyword,
+  findDeletableMatches,
   deleteByPickIndex,
+  deleteLastNTransactions,
+  deleteRecentNByRawTextMarker,
 } = require("./services/googleSheet");
+const { parseDeleteQuery } = require("./services/deleteSearch");
+const { DELETE_MARKER_SCREENSHOT } = require("./services/intent");
 const { getChatIdFromEvent } = require("./utils/chatId");
 const { pendingKey } = require("./utils/pendingKey");
 const {
@@ -54,6 +58,8 @@ const {
   formatHelp,
   formatError,
   formatDeletePickList,
+  formatDeleteConfirmPrompt,
+  formatDeleteAwaitConfirm,
   formatZeroAmountWarning,
 } = require("./utils/formatter");
 
@@ -82,7 +88,7 @@ const client = new line.messagingApi.MessagingApiClient({
   channelAccessToken: lineConfig.channelAccessToken,
 });
 
-/** @type {Map<string, { matches: object[], at: number }>} */
+/** @type {Map<string, { matches: object[], label: string, stage: 'pick'|'confirm', selectedIndex?: number, at: number }>} */
 const pendingDeletes = new Map();
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
@@ -142,9 +148,17 @@ async function handleEvent(event) {
       const intent = await classifyIntent(text);
       console.log("[Intent]", intent);
 
-      if (intent.intent === "delete_pick") {
+      if (intent.intent === "delete_confirm") {
+        replyPayload = await handleDeleteConfirm(chatId, actor);
+      } else if (intent.intent === "delete_cancel") {
+        replyPayload = { text: handleDeleteCancel(chatId, actor) };
+      } else if (intent.intent === "delete_pick") {
         replyPayload = {
           text: await handleDeletePick(chatId, intent.pickIndex, actor),
+        };
+      } else if (intent.intent === "delete_bulk") {
+        replyPayload = {
+          text: await handleDeleteBulk(intent.count, chatId, actor),
         };
       } else if (intent.intent === "delete") {
         replyPayload = await handleDelete(text, intent.target, chatId, actor);
@@ -215,41 +229,89 @@ async function handleExpense(text, chatId, actor) {
 async function handleDelete(text, target, chatId, actor) {
   console.log("[Flow] 刪除流程, target:", target);
 
-  let result;
-
   if (target === "__last__") {
-    result = await deleteLastTransaction(chatId, { actor });
-  } else {
-    result = await deleteByItemKeyword(target, chatId, { actor });
+    const result = await deleteLastTransaction(chatId, { actor });
+    if (result.status === "empty") {
+      return { text: "帳本空空的，沒東西可刪 🫥" };
+    }
+    if (result.status === "not_owned") {
+      return {
+        text: "只能刪你自己記的帳喔 🙏\n上一筆是別人記的，請對方自己刪或用關鍵字找你的那筆",
+      };
+    }
+    pendingDeletes.delete(pendingKey(chatId, actor));
+    const reply = await generateDeleteReply(result.transaction);
+    return reply;
   }
 
-  if (result.status === "empty") {
-    return { text: "帳本空空的，沒東西可刪 🫥" };
-  }
+  const query = parseDeleteQuery(target);
+  const { matches, label } = await findDeletableMatches(chatId, {
+    actor,
+    query,
+  });
 
-  if (result.status === "not_owned") {
+  if (matches.length === 0) {
     return {
-      text: "只能刪你自己記的帳喔 🙏\n上一筆是別人記的，請對方自己刪或用關鍵字找你的那筆",
+      text: `MoodPay 翻遍了帳本，沒找到 ${label}\n試試 /undo 或「刪除上一筆」`,
     };
   }
 
-  if (result.status === "not_found") {
-    return {
-      text: `MoodPay 翻遍了帳本，沒找到「${result.keyword}」\n試試 /undo 或「刪除上一筆」`,
-    };
-  }
-
-  if (result.status === "multiple") {
+  if (matches.length > 1) {
     pendingDeletes.set(pendingKey(chatId, actor), {
-      matches: result.matches,
+      matches,
+      label,
+      stage: "pick",
       at: Date.now(),
     });
-    return { text: formatDeletePickList(result.matches, result.keyword) };
+    return { text: formatDeletePickList(matches, label) };
   }
 
-  pendingDeletes.delete(pendingKey(chatId, actor));
-  const reply = await generateDeleteReply(result.transaction);
-  return reply;
+  pendingDeletes.set(pendingKey(chatId, actor), {
+    matches,
+    label,
+    stage: "confirm",
+    selectedIndex: 1,
+    at: Date.now(),
+  });
+  return { text: formatDeleteConfirmPrompt(matches[0], label) };
+}
+
+/**
+ * @param {number} count
+ * @param {string} chatId
+ * @param {object} actor
+ */
+async function handleDeleteBulk(count, chatId, actor) {
+  console.log("[Flow] 批次刪除", count, "筆");
+
+  const screenshotTry = await deleteRecentNByRawTextMarker(
+    DELETE_MARKER_SCREENSHOT,
+    chatId,
+    count,
+    { actor }
+  );
+  if (screenshotTry.status === "ok") {
+    return formatBulkDeleteResult(
+      screenshotTry,
+      `最近 ${count} 筆截圖匯入（${DELETE_MARKER_SCREENSHOT}）`
+    );
+  }
+
+  const result = await deleteLastNTransactions(chatId, count, { actor });
+  return formatBulkDeleteResult(result, `最近 ${count} 筆`);
+}
+
+function formatBulkDeleteResult(result, label) {
+  if (result.status === "empty") {
+    return "帳本空空的，沒東西可刪 🫥";
+  }
+  if (result.status === "not_owned") {
+    return "只能刪你自己記的帳喔 🙏";
+  }
+  if (result.status === "not_found") {
+    return `沒找到符合 ${label} 的記帳列`;
+  }
+  return `已刪除 ${result.deletedCount} 筆（${label}）🗑️`;
 }
 
 /**
@@ -263,15 +325,57 @@ async function handleDeletePick(chatId, pickIndex, actor) {
     return "還沒有要選的刪除項目\n先輸入「刪除 關鍵字」讓 MoodPay 找";
   }
 
-  const result = await deleteByPickIndex(pending.matches, pickIndex, chatId);
+  const entry = pending.matches.find((m) => m.index === pickIndex);
+  if (!entry) {
+    return `這個編號不存在喔，請選 1～${pending.matches.length}`;
+  }
+
+  pending.stage = "confirm";
+  pending.selectedIndex = pickIndex;
+  pending.at = Date.now();
+  pendingDeletes.set(pendingKey(chatId, actor), pending);
+
+  return formatDeleteAwaitConfirm(entry);
+}
+
+/**
+ * @param {string} chatId
+ * @param {object} actor
+ */
+async function handleDeleteConfirm(chatId, actor) {
+  const pending = getPendingDelete(chatId, actor);
+  if (!pending || pending.stage !== "confirm" || !pending.selectedIndex) {
+    return {
+      text: "目前沒有待確認的刪除\n先說「刪除 5/26的義大利麵」等，選好筆數後再回「確認」",
+    };
+  }
+
+  const result = await deleteByPickIndex(
+    pending.matches,
+    pending.selectedIndex,
+    chatId
+  );
   pendingDeletes.delete(pendingKey(chatId, actor));
 
   if (result.status === "ok") {
     const reply = await generateDeleteReply(result.transaction);
-    return reply.text;
+    return reply;
   }
 
-  return `這個編號不存在喔，請選 1～${pending.matches.length}`;
+  return "這筆可能已被刪除或找不到，請重新搜尋";
+}
+
+/**
+ * @param {string} chatId
+ * @param {object} actor
+ */
+function handleDeleteCancel(chatId, actor) {
+  const had = getPendingDelete(chatId, actor);
+  pendingDeletes.delete(pendingKey(chatId, actor));
+  if (!had) {
+    return "沒有進行中的刪除確認";
+  }
+  return "好，這次不刪了 🫥";
 }
 
 function getPendingDelete(chatId, actor) {

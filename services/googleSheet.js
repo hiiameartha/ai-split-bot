@@ -550,40 +550,64 @@ function scopeTransactionsForDelete(transactions, actor) {
   return filterDeletableTransactions(transactions, actor);
 }
 
+/**
+ * 搜尋可刪除列（不刪除）
+ * @param {string} chatId
+ * @param {{ actor?: object, query?: { item: string, month: number|null, day: number|null } }} options
+ */
+async function findDeletableMatches(chatId, options = {}) {
+  const {
+    parseDeleteQuery,
+    filterTransactionsForDeleteQuery,
+    toDeleteMatchEntry,
+  } = require("./deleteSearch");
+
+  const query =
+    options.query ||
+    parseDeleteQuery(options.keyword || options.target || "");
+  const scoped = scopeTransactionsForDelete(
+    await getTransactions(chatId),
+    options.actor
+  );
+  const matched = filterTransactionsForDeleteQuery(scoped, query).reverse();
+  const label = formatDeleteSearchLabel(query);
+
+  return {
+    query,
+    label,
+    matches: matched.slice(0, 8).map((tx, i) => toDeleteMatchEntry(tx, i + 1)),
+  };
+}
+
+function formatDeleteSearchLabel(query) {
+  const parts = [];
+  if (query.month != null && query.day != null) {
+    parts.push(`${query.month}/${query.day}`);
+  }
+  if (query.item) parts.push(`「${query.item}」`);
+  return parts.join(" ") || "條件";
+}
+
 async function deleteByItemKeyword(keyword, chatId, options = {}) {
   const kw = (keyword || "").trim();
   if (!kw) {
     return deleteLastTransaction(chatId, options);
   }
 
-  const all = scopeTransactionsForDelete(
-    await getTransactions(chatId),
-    options.actor
-  );
-  const matches = all
-    .filter(
-      (tx) =>
-        (tx.item && tx.item.includes(kw)) ||
-        (tx.rawText && tx.rawText.includes(kw))
-    )
-    .reverse();
+  const { matches, label } = await findDeletableMatches(chatId, {
+    actor: options.actor,
+    keyword: kw,
+  });
 
   if (matches.length === 0) {
-    return { status: "not_found", keyword: kw };
+    return { status: "not_found", keyword: label };
   }
 
   if (matches.length > 1 && options.pickIndex == null) {
     return {
       status: "multiple",
-      keyword: kw,
-      matches: matches.slice(0, 5).map((tx, i) => ({
-        index: i + 1,
-        rowIndex: tx.rowIndex,
-        item: tx.item,
-        amount: tx.amount,
-        currency: tx.currency,
-        date: tx.date,
-      })),
+      keyword: label,
+      matches,
     };
   }
 
@@ -593,11 +617,17 @@ async function deleteByItemKeyword(keyword, chatId, options = {}) {
       : matches[0];
 
   if (!pick) {
-    return { status: "not_found", keyword: kw };
+    return { status: "not_found", keyword: label };
   }
 
-  await deleteRowByIndex(pick.rowIndex);
-  return { status: "ok", transaction: pick };
+  const all = await getTransactions(chatId);
+  const tx = all.find((t) => t.rowIndex === pick.rowIndex);
+  if (!tx) {
+    return { status: "not_found", keyword: label };
+  }
+
+  await deleteRowByIndex(tx.rowIndex);
+  return { status: "ok", transaction: tx };
 }
 
 /**
@@ -622,14 +652,73 @@ async function deleteByPickIndex(matches, pickIndex, chatId) {
   return { status: "ok", transaction: tx };
 }
 
+/**
+ * 刪除自己最近 N 筆（由舊到新刪列，避免 rowIndex 錯位）
+ * @param {string} chatId
+ * @param {number} n
+ */
+async function deleteLastNTransactions(chatId, n, options = {}) {
+  const all = await getTransactions(chatId);
+  const scoped = scopeTransactionsForDelete(all, options.actor);
+  if (scoped.length === 0) {
+    return { status: all.length === 0 ? "empty" : "not_owned" };
+  }
+
+  const count = Math.min(Math.max(1, Math.floor(n)), scoped.length);
+  const toDelete = scoped.slice(-count);
+  const sorted = [...toDelete].sort((a, b) => b.rowIndex - a.rowIndex);
+
+  for (const tx of sorted) {
+    await deleteRowByIndex(tx.rowIndex);
+  }
+
+  return { status: "ok", deletedCount: sorted.length, transactions: sorted };
+}
+
+/**
+ * 刪除最近 N 筆含 rawText 標記的列（例：舊資料 [截圖] 前綴）
+ * @param {string} marker
+ * @param {string} chatId
+ * @param {number} n
+ */
+async function deleteRecentNByRawTextMarker(marker, chatId, n, options = {}) {
+  const needle = String(marker || "").trim();
+  if (!needle) {
+    return { status: "not_found", keyword: marker };
+  }
+
+  const scoped = scopeTransactionsForDelete(
+    await getTransactions(chatId),
+    options.actor
+  );
+  const matches = scoped.filter((tx) => (tx.rawText || "").includes(needle));
+
+  if (matches.length === 0) {
+    return { status: "not_found", keyword: needle };
+  }
+
+  const count = Math.min(Math.max(1, Math.floor(n)), matches.length);
+  const toDelete = matches.slice(-count);
+  const sorted = [...toDelete].sort((a, b) => b.rowIndex - a.rowIndex);
+
+  for (const tx of sorted) {
+    await deleteRowByIndex(tx.rowIndex);
+  }
+
+  return { status: "ok", deletedCount: sorted.length, transactions: sorted };
+}
+
 module.exports = {
   appendTransaction,
   getAllTransactions,
   getTransactions,
   getRecentTransactions,
   deleteLastTransaction,
+  findDeletableMatches,
   deleteByItemKeyword,
   deleteByPickIndex,
+  deleteLastNTransactions,
+  deleteRecentNByRawTextMarker,
   mapRowToTransaction,
   transactionToRow,
   serializeSharedWith,

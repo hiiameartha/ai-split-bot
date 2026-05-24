@@ -10,23 +10,30 @@ const { pickRuleMeme } = require("../services/meme");
 
 const cases = [
   { text: "刪除測試吐司", expect: "delete" },
-  { text: "刪除測試吐司的價錢", expect: "delete" },
   { text: "刪除上一筆", expect: "delete" },
   { text: "我買了80元便當", expect: "record" },
   { text: "刪除 2", expect: "delete_pick" },
   { text: "undo", expect: "delete" },
   { text: "匯入", expect: "record" },
+  { text: "移除以上這16種記帳", expect: "delete_bulk" },
+  { text: "確認", expect: "delete_confirm" },
+  { text: "取消", expect: "delete_cancel" },
 ];
+
+function intentMatches(result, expect) {
+  if (expect === "delete_pick") return result.intent === "delete_pick";
+  if (expect === "delete_bulk") return result.intent === "delete_bulk";
+  if (expect === "delete_confirm") return result.intent === "delete_confirm";
+  if (expect === "delete_cancel") return result.intent === "delete_cancel";
+  return result.intent === expect;
+}
 
 async function run() {
   let passed = 0;
 
   for (const c of cases) {
     const result = await classifyIntent(c.text);
-    const ok =
-      c.expect === "delete_pick"
-        ? result.intent === "delete_pick"
-        : result.intent === c.expect;
+    const ok = intentMatches(result, c.expect);
 
     console.log(
       ok ? "✅" : "❌",

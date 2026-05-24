@@ -9,6 +9,7 @@ const ROOT = path.join(__dirname, "..");
 
 const TESTS = [
   "scripts/test-pending-key.js",
+  "scripts/test-delete-search.js",
   "scripts/test-intent-flow.js",
   "scripts/test-parse-hints.js",
   "scripts/test-category.js",

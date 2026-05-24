@@ -12,25 +12,54 @@ const openai = process.env.OPENAI_API_KEY
 const MODEL = "gpt-4o-mini";
 
 const DELETE_PREFIX =
-  /^(刪除|删除|取消記帳|取消记账|作廢|作废|撤銷|撤销|undo|delete|remove)\s*/i;
+  /^(刪除|删除|移除|取消記帳|取消记账|作廢|作废|撤銷|撤销|undo|delete|remove)\s*/i;
 
 const DELETE_LAST_PATTERN =
   /^(刪除|删除|undo|delete)\s*(上一筆|上一笔|最後一筆|最后笔|最新一筆|最新一笔|last|latest)?\s*$/i;
 
 const DELETE_PICK_PATTERN = /^(刪除|删除|delete)\s*#?(\d+)\s*$/i;
 
+const DELETE_CONFIRM_PATTERN =
+  /^(確認刪除|確認|確定刪除|確定|好的刪除|好\s*的|刪吧|是|ok|yes|y)\s*$/i;
+
+const DELETE_CANCEL_PATTERN = /^(取消刪除|取消|不要了|算了|不用刪|no|n)\s*$/i;
+
 const RECORD_BLOCK_PATTERN =
   /^(我|男友|女友|小胖|大家).*(買了|付了|代墊|吃|花)/;
+
+const DELETE_MARKER_SCREENSHOT = "[截圖]";
+
+/**
+ * 「移除這16筆」「移除以上這16種記帳」等批次刪除筆數
+ * @param {string} text
+ * @returns {number|null}
+ */
+function parseBulkDeleteCount(text) {
+  const m = String(text).match(
+    /(?:移除|刪除|删除)\s*(?:這|以上)?\s*(?:這)?\s*(\d+)\s*(?:筆|项項|种種|種記帳|種)/i
+  );
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 /**
  * 解析使用者文字意圖
  * @param {string} text
- * @returns {Promise<{ intent: 'record'|'delete'|'delete_pick', target?: string, pickIndex?: number }>}
+ * @returns {Promise<object>}
  */
 async function classifyIntent(text) {
   const trimmed = text.trim();
   if (!trimmed) {
     return { intent: "record" };
+  }
+
+  if (DELETE_CONFIRM_PATTERN.test(trimmed)) {
+    return { intent: "delete_confirm" };
+  }
+
+  if (DELETE_CANCEL_PATTERN.test(trimmed)) {
+    return { intent: "delete_cancel" };
   }
 
   const pickMatch = trimmed.match(DELETE_PICK_PATTERN);
@@ -39,6 +68,11 @@ async function classifyIntent(text) {
       intent: "delete_pick",
       pickIndex: parseInt(pickMatch[2], 10),
     };
+  }
+
+  const bulkCount = parseBulkDeleteCount(trimmed);
+  if (bulkCount) {
+    return { intent: "delete_bulk", count: Math.min(bulkCount, 50) };
   }
 
   if (DELETE_LAST_PATTERN.test(trimmed) || /^\/undo\s*$/i.test(trimmed)) {
@@ -69,7 +103,8 @@ async function classifyIntent(text) {
  * @param {string} text
  */
 function needsAiIntent(text) {
-  const hints = ["刪掉", "删掉", "不要這筆", "不要这笔", "拿掉", "移除這筆", "移除这笔"];
+  if (/^(移除|刪掉|删掉|拿掉)/.test(text)) return true;
+  const hints = ["不要這筆", "不要这笔", "移除這筆", "移除这笔", "移除這", "移除以上"];
   return hints.some((h) => text.includes(h));
 }
 
@@ -79,8 +114,13 @@ function needsAiIntent(text) {
  */
 async function classifyIntentWithAi(text) {
   if (!openai) {
-    if (/刪|取消|作廢|撤銷|undo|delete|remove/i.test(text)) {
-      return { intent: "delete", target: text.replace(/.*?(刪|取消)/, "").trim() || "__last__" };
+    if (/刪|移除|取消|作廢|撤銷|undo|delete|remove/i.test(text)) {
+      const bulk = parseBulkDeleteCount(text);
+      if (bulk) return { intent: "delete_bulk", count: Math.min(bulk, 50) };
+      return {
+        intent: "delete",
+        target: text.replace(/.*?(?:刪|移除|取消)/, "").trim() || "__last__",
+      };
     }
     return { intent: "record" };
   }
@@ -96,8 +136,8 @@ async function classifyIntentWithAi(text) {
           role: "system",
           content: `分類 MoodPay 使用者訊息。只回 JSON：
 {"intent":"record"|"delete","target":""}
-delete 時 target 為要刪的項目關鍵字；若刪上一筆則 target 為 "__last__"。
-「刪除測試吐司」→ delete, target「測試吐司」。`,
+delete：刪除帳目（含「移除」「刪除」），target 為項目關鍵字；刪上一筆則 "__last__"。
+「移除這16筆」「刪除測試吐司」→ delete，勿當記帳。`,
         },
         { role: "user", content: text },
       ],
@@ -133,4 +173,6 @@ function isExplicitFreeContext(text, parsed) {
 module.exports = {
   classifyIntent,
   isExplicitFreeContext,
+  parseBulkDeleteCount,
+  DELETE_MARKER_SCREENSHOT,
 };
