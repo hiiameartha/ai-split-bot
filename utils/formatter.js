@@ -94,7 +94,8 @@ function formatHelp() {
     "  /debt      你的代墊結算",
     "  /summary   本月文案速覽",
     "  /month     本月簡短版",
-    "  /undo /delete",
+    "  /undo      刪除上一筆",
+    "  /delete 關鍵字  依項目刪（例：/delete 火鍋）",
     "",
     "🌏 TWD · MYR · USD · JPY · KRW",
   ].join("\n");

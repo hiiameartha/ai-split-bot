@@ -422,12 +422,14 @@ async function handleCommand(text, chatId, actor) {
 
   if (command === "/delete") {
     const keyword = parts.slice(1).join(" ").trim();
-    const reply = await handleDelete(
-      text,
-      keyword ? keyword : "__last__",
-      chatId,
-      actor
-    );
+    if (!keyword) {
+      return [
+        "刪除上一筆請用 /undo",
+        "依項目刪除請用：/delete 火鍋",
+        "或自然語言：刪除5/26的義大利麵",
+      ].join("\n");
+    }
+    const reply = await handleDelete(text, keyword, chatId, actor);
     return reply.text;
   }
 
