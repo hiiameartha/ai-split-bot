@@ -1,6 +1,6 @@
 # MoodPay 💸
 
-LINE AI 多人記帳與分帳 Bot。用繁體中文自然語言記帳，自動匯率換算、寫入 Google Sheet、計算代墊／欠款，並以 QuickChart 產生圖表與幽默回覆。
+LINE AI 多人記帳與分帳 Bot（v1.3.0）。用繁體中文自然語言記帳，自動匯率換算、寫入 Google Sheet、計算代墊／欠款，並以 QuickChart 產生圖表與幽默回覆。
 
 ---
 
@@ -16,7 +16,7 @@ LINE AI 多人記帳與分帳 Bot。用繁體中文自然語言記帳，自動�
 - [環境變數](#環境變數)
 - [本機開發](#本機開發)
 - [部署與 24hr 運行](#部署與-24hr-運行)
-- [測試腳本](#測試腳本)
+- [測試](#測試)
 
 ---
 
@@ -33,6 +33,7 @@ flowchart TB
     WH["POST /webhook"]
     Router[事件路由]
     Intent[意圖分流 intent.js]
+    DelSearch[刪除搜尋 deleteSearch.js]
     AI[記帳解析 ai.js]
     Hints[後處理 parseHints.js]
     Ledger[帳務口徑 ledger.js]
@@ -56,6 +57,8 @@ flowchart TB
   LINEAPI -->|Webhook HTTPS| WH
   WH --> Router
   Router --> Intent
+  Intent --> DelSearch
+  DelSearch --> Sheet
   Intent --> AI
   AI --> Hints
   Hints --> Ledger
@@ -99,7 +102,7 @@ flowchart TB
 3. 依訊息類型分支：
    - **非文字**（含圖片）→ 提示目前僅支援文字記帳。
    - **文字且以 `/` 開頭** → `handleCommand`（指令表）。
-   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 刪除編號。
+   - **一般文字** → `classifyIntent` → 記帳 / 刪除 / 選號 / 確認 / 取消 / 批次刪除。
 4. 記帳：`parseExpense`（AI）→ `applyParseHints` → 匯率 `convertToTWD`（含快取）→ `resolveActorsForStorage` → `appendTransaction` → `generateFunnyReply`。
 5. 報表／圖表：一律經 `ledger.summarizeLedger` 加總；讀 Sheet 有 TTL 快取（寫入／刪除時失效）。
 6. 以 `replyMessage` 回覆：文字 + 選填圖片（圖表或梗圖）。
@@ -110,8 +113,11 @@ flowchart TB
     ├─ /開頭 ──────────────► handleCommand
     │
     └─ 一般文字 ──► classifyIntent
+                      ├─ delete_confirm ──► 確認刪除（單筆 pending）
+                      ├─ delete_cancel ───► 取消 pending 刪除
                       ├─ delete_pick ─────► 多筆刪除選編號
-                      ├─ delete ──────────► 刪除上一筆 / 關鍵字
+                      ├─ delete_bulk ─────► 批次刪最近 N 筆
+                      ├─ delete ──────────► 刪上一筆 / 關鍵字 / 日期+項目
                       └─ record ──────────► handleExpense（AI 記帳）
 ```
 
@@ -123,11 +129,18 @@ flowchart TB
       → ledger.summarizeLedger       # 所有 /chart、/summary KPI
 ```
 
+**刪除流程（關鍵字 / 日期搜尋）**
+
+1. `parseDeleteQuery`（`deleteSearch.js`）解析「5/26的義大利麵」、「5月26日的火鍋」等日期＋項目條件。
+2. `findDeletableMatches` 僅搜尋**你自己**記的列（`recordedBy`）。
+3. 命中 0 筆 → 提示找不到；1 筆 → 進入 `confirm` 待確認；多筆 → 列出編號，回「刪除 2」選筆後再「確認」。
+4. `/undo`、刪上一筆 → 立即刪，不經確認。
+
 **記憶體暫存（重啟會消失）**
 
 | Map | Key | TTL | 用途 |
 |-----|-----|-----|------|
-| `pendingDeletes` | `chatId::userId` | 5 分鐘 | 關鍵字刪除命中多筆時，等「刪除 2」 |
+| `pendingDeletes` | `chatId::userId` | 5 分鐘 | 刪除 pending；`stage` 為 `pick`（選號）或 `confirm`（待確認） |
 
 ---
 
@@ -212,9 +225,16 @@ AI 解析後會再校正，減少主受詞顛倒、算式算錯：
 
 優先 **規則**，必要時才呼叫 AI：
 
-- `刪除 …`、`/undo` → 刪除
-- `刪除 2` → 多筆刪除選號
-- 含「刪掉、不要這筆」等模糊語 → AI 分類
+| 意圖 | 觸發範例 |
+|------|----------|
+| `delete` | `刪除上一筆`、`刪除 火鍋`、`刪除 5/26的義大利麵` |
+| `delete_pick` | `刪除 2`（多筆 pending 時選編號） |
+| `delete_confirm` | `確認`、`確定刪除`、`ok` |
+| `delete_cancel` | `取消`、`不要了` |
+| `delete_bulk` | `移除這16筆`（最多 50 筆；優先刪 `rawText` 含 `[截圖]` 的列） |
+| `record` | 其餘記帳語句 |
+
+含「刪掉、不要這筆、移除以上」等模糊語 → AI 分類（無 API Key 時退回規則）。
 
 金額 ≤ 0 預設拒絕寫入；`income`、`treat` 或訊息含「免費、不用付錢、請客」等則允許（`isExplicitFreeContext`）。
 
@@ -233,7 +253,8 @@ ai-split-bot/
 │   ├── ai.js                   # 自然語言記帳 → JSON
 │   ├── parseHints.js           # 算式金額、relation 校正、income / treat
 │   ├── ledger.js               # 帳務口徑（支出／收入／淨額、個人帳本）
-│   ├── intent.js               # 刪除 / 記帳意圖
+│   ├── intent.js               # 刪除 / 記帳意圖（含批次、確認、取消）
+│   ├── deleteSearch.js         # 刪除查詢：日期＋項目關鍵字解析
 │   ├── actor.js                # 我 / 關係人 scope、個人篩選、顯示標籤
 │   ├── googleSheet.js          # Sheet CRUD、快取、欄位初始化
 │   ├── exchange.js             # 多幣別 → TWD（含匯率快取）
@@ -253,15 +274,24 @@ ai-split-bot/
 │   └── chartTheme.js           # 圖表深色 fintech 主題
 ├── .github/workflows/
 │   └── test.yml                # CI：npm test
+├── docs/
+│   └── NOTION.md               # Notion 匯入用長文文件
 └── scripts/
-    ├── run-all-tests.js        # npm test 入口
+    ├── run-all-tests.js        # npm test 入口（15 套件）
+    ├── test-pending-key.js
+    ├── test-delete-search.js
     ├── test-intent-flow.js
+    ├── test-parse-hints.js
     ├── test-category.js
-    ├── test-charts.js
     ├── test-tags.js
+    ├── test-ledger.js
+    ├── test-google-sheet.js
+    ├── test-sheet-cache.js
+    ├── test-exchange.js
     ├── test-settlement.js
     ├── test-actor.js
-    └── test-date.js
+    ├── test-date.js
+    └── test-charts.js
 ```
 
 ---
@@ -334,14 +364,18 @@ ai-split-bot/
 | `/debtchart` | **你的**代墊長條圖 |
 | `/members` | 群組戰力榜（每人自己記的支出） |
 | `/undo` | 刪除**你自己**最後一筆（立即刪） |
-| `/delete 關鍵字` | 依項目刪除（例：`/delete 火鍋`，會先確認） |
+| `/delete 關鍵字` | 依項目刪除（例：`/delete 火鍋`；單筆需確認，多筆先選號） |
 
 圖表指令回傳 **文字 + 圖片**；若 QuickChart URL 過長或失敗，僅回文字並註明略過圖表。
 
 ### 自然語言（非 `/`）
 
 - **記帳**：直接描述消費、收入（例：薪水 50000）、請客（例：被請吃不用付）。
-- **刪除**：`刪除上一筆`、`刪除 火鍋`、`刪除 2`（多筆時）；無法刪除他人記的列。
+- **刪除上一筆**：`刪除上一筆`、`移除上一筆資料`、`/undo` → 立即刪，不經確認。
+- **依關鍵字 / 日期刪除**：`刪除 火鍋`、`刪除 5/26的義大利麵` → 找到後需回「確認」；多筆時先 `刪除 2` 選號再確認。
+- **批次刪除**：`移除這16筆` → 刪除最近 N 筆自己記的帳（截圖匯入列優先以 `[截圖]` 標記匹配）。
+- **取消**：pending 刪除中可回「取消」放棄。
+- 無法刪除他人記的列（僅 `recordedBy` 為自己的列）。
 
 ---
 
@@ -443,18 +477,24 @@ Bot 必須在**有固定 HTTPS 網址的伺服器**上執行，LINE 才能隨時
 
 ## 測試
 
-不需啟動 LINE，在專案根目錄執行：
+不需啟動 LINE、Google Sheet 或 OpenAI，在專案根目錄執行：
 
 ```bash
-npm test                 # 跑全部單元測試（CI 同款）
-npm run test:intent      # 意圖分流
-npm run test:category    # 分類 / tags
-npm run test:charts      # 圖表 URL
-npm run test:ledger      # 帳務口徑
-npm run test:google-sheet # sharedWith 列映射
+npm test                    # 跑全部 15 套件（CI 同款）
+npm run test:intent         # 意圖分流（含確認 / 批次刪除）
+npm run test:parse-hints    # 算式、relation、income / treat 校正
+npm run test:delete-search  # 刪除查詢日期＋項目解析
+npm run test:category       # 分類正規化
+npm run test:tags           # 標籤補強
+npm run test:charts         # QuickChart URL
+npm run test:ledger         # 帳務口徑、個人篩選
+npm run test:google-sheet   # sharedWith 列映射
+npm run test:sheet-cache    # Sheet 讀取快取 TTL
+npm run test:exchange       # 匯率換算與快取
+npm run test:pending-key    # 群組 pending 狀態 key
 ```
 
-GitHub Actions 會在 push / PR 時自動執行 `npm test`（見 `.github/workflows/test.yml`）。
+GitHub Actions（Node 20）會在 push / PR 至 `main` / `master` 時自動執行 `npm test`（見 `.github/workflows/test.yml`）。
 
 ### 已知限制（後續可改）
 
