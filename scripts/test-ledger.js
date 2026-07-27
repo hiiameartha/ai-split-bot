@@ -8,6 +8,9 @@ const {
   filterDeletableTransactions,
 } = require("../services/ledger");
 const { calculateBalances } = require("../services/settlement");
+const { getZonedParts, formatDateAtNoonInAppTz } = require("../utils/date");
+
+process.env.MOODPAY_TIMEZONE = "Asia/Taipei";
 
 function assert(cond, msg) {
   if (!cond) {
@@ -20,9 +23,14 @@ function assert(cond, msg) {
 const alice = { userId: "U-alice", displayName: "小愛" };
 const bob = { userId: "U-bob", displayName: "阿明" };
 
+const { year, month } = getZonedParts(new Date());
+const dateDay10 = formatDateAtNoonInAppTz(year, month, 10);
+const dateDay11 = formatDateAtNoonInAppTz(year, month, 11);
+const dateDay12 = formatDateAtNoonInAppTz(year, month, 12);
+
 const txs = [
   {
-    date: "2026/05/10 12:00",
+    date: dateDay10,
     payer: "我",
     consumer: "我",
     relation: "self",
@@ -33,7 +41,7 @@ const txs = [
     recordedByName: "小愛",
   },
   {
-    date: "2026/05/11 12:00",
+    date: dateDay11,
     payer: "我",
     consumer: "我",
     relation: "income",
@@ -45,7 +53,7 @@ const txs = [
     recordedByName: "小愛",
   },
   {
-    date: "2026/05/12 12:00",
+    date: dateDay12,
     payer: "男友",
     consumer: "我",
     relation: "paid_for_me",
