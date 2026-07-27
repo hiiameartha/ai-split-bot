@@ -25,6 +25,34 @@ const PAID_FOR_ME_RE =
 
 const I_PAID_RE = /我\s*(?:幫|替)\s*([^\s，,。、]{1,12}?)\s*(?:付|請|請客|買|吃)/;
 
+/** 我請／招待別人（我出錢，算我的支出，不是被請客 treat） */
+const I_TREAT_OTHERS_RE =
+  /我(?:[^被]{0,24}?)(?:請客|招待|請(?!\s*我))\s*([^\s，,。、吃喝]{1,12})(?:吃|喝|用餐|吃飯|買|晚餐|午餐|早餐|下午茶)?/;
+const I_TREAT_GENERIC_RE = /我(?:[^被]{0,24}?)請客/;
+
+/**
+ * @param {string} text
+ * @returns {{ payer: string, consumer: string, relation: string }|null}
+ */
+function detectITreatingOthers(text) {
+  const t = String(text);
+  if (/請\s*我/.test(t)) return null;
+
+  const named = t.match(I_TREAT_OTHERS_RE);
+  if (named) {
+    const beneficiary = cleanPartyName(named[1]);
+    if (beneficiary) {
+      return { payer: "我", consumer: beneficiary, relation: "self" };
+    }
+  }
+
+  if (I_TREAT_GENERIC_RE.test(t)) {
+    return { payer: "我", consumer: "我", relation: "self" };
+  }
+
+  return null;
+}
+
 const NOT_PAID_BY_ME_RE = /不用付|沒付|免付|不用錢|沒出錢|零元消費/;
 
 const SELF_ALIASES = new Set(["我", "自己", "本人"]);
@@ -143,8 +171,19 @@ function detectIncomeContext(text) {
  * @param {string} text
  * @returns {{ payer: string, consumer: string, relation: string }|null}
  */
+/**
+ * 是否為「我出錢請／招待別人」（與被請客 treat 相反）
+ * @param {string} text
+ */
+function isITreatingOthers(text) {
+  return detectITreatingOthers(text) !== null;
+}
+
 function inferRelationFromText(text) {
   const t = String(text);
+
+  const iTreat = detectITreatingOthers(t);
+  if (iTreat) return iTreat;
 
   const passive = t.match(PASSIVE_TREATED_RE);
   if (passive) {
@@ -181,6 +220,7 @@ function inferRelationFromText(text) {
  */
 function isTreatNotDebt(text) {
   const t = String(text);
+  if (isITreatingOthers(t)) return false;
   if (!TREAT_RE.test(t)) return false;
   if (ADVANCE_RE.test(t) && !NOT_PAID_BY_ME_RE.test(t)) return false;
   return true;
@@ -226,6 +266,17 @@ function formatNotionalLabel(n) {
  * @param {string} text
  */
 function applyTreatNoDebt(parsed, text) {
+  if (isITreatingOthers(text)) {
+    const inferred = detectITreatingOthers(text);
+    if (!inferred) return parsed;
+    return {
+      ...parsed,
+      relation: inferred.relation,
+      payer: inferred.payer,
+      consumer: inferred.consumer,
+      amount: Math.abs(Number(parsed.amount) || 0),
+    };
+  }
   if (!isTreatNotDebt(text)) return parsed;
   if (parsed.relation === "income" || parsed.relation === "shared") {
     return parsed;
@@ -340,6 +391,7 @@ module.exports = {
   evaluateAmountFromText,
   detectIncomeContext,
   inferRelationFromText,
+  isITreatingOthers,
   isTreatNotDebt,
   extractNotionalAmount,
   applyTreatNoDebt,

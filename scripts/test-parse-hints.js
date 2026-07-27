@@ -8,6 +8,7 @@ const {
   detectIncomeContext,
   extractNotionalAmount,
   isTreatNotDebt,
+  isITreatingOthers,
 } = require("../services/parseHints");
 const { calculateBalances } = require("../services/settlement");
 
@@ -50,6 +51,27 @@ assert(
 );
 assert(isTreatNotDebt("女朋友請我吃火鍋"), "請我吃 → 請客語境");
 assert(!isTreatNotDebt("男友幫我付 25 馬幣火鍋"), "幫我付 → 代墊非請客");
+assert(isITreatingOthers("我請同事吃晚餐"), "我請同事 → 我出錢請人");
+assert(!isTreatNotDebt("我請同事吃晚餐"), "我請人吃 → 非被請客 treat");
+
+const myTreat = applyParseHints(
+  {
+    payer: "我",
+    consumer: "同事",
+    relation: "treat",
+    amount: 1000,
+    item: "晚餐",
+    tags: ["我", "請", "同事"],
+  },
+  "我今天分紅請同事吃晚餐$1000"
+);
+assert(myTreat.relation === "self", "我請同事 → self 我支出");
+assert(myTreat.amount === 1000, "我請客保留實付金額");
+assert(myTreat.payer === "我" && myTreat.consumer === "同事", "我請客 → 我付、同事受益");
+assert(
+  inferRelationFromText("我今天分紅請同事吃晚餐$1000")?.relation === "self",
+  "infer：我請同事 → self"
+);
 
 const advance = applyParseHints(
   {

@@ -82,12 +82,13 @@ relation 規則（非常重要）：
 - i_paid：我幫別人付（payer=我, consumer=對方）
 - shared：多人分攤
 - income：收到錢、塞進錢包、紅包入帳（payer=給錢的人, consumer=我）
-- treat：請客／招待／包養／不用付錢（不算債；amount 填 0，參考價值寫在 item 備註如「buffet（價值30萬，女朋友請客）」）
+- treat：被請客／被招待／包養／不用付錢（別人出錢、我實付 0；amount 填 0，參考價值寫在 item 備註如「buffet（價值30萬，女朋友請客）」）
 
 relation 範例：
 - 「男友幫我付 25 馬幣火鍋」→ paid_for_me（代墊要還）
 - 「我幫小胖付了 500」→ i_paid
 - 「被女朋友包養吃 buffet 不用付錢，價值30萬」→ treat, amount:0, payer:女朋友, item 含價值備註
+- 「我今天分紅請同事吃晚餐 1000」→ self, payer:我, consumer:同事, amount:1000（我請人吃是我支出，不是 treat）
 - 「我阿嬤塞了 300 進錢包」→ income
 
 金額算式：
